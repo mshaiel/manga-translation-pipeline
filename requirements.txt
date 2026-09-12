@@ -1,0 +1,31 @@
+# Core Deep Learning & Computer Vision (executed in Google Colab)
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.35.0
+manga-ocr>=0.1.11
+
+# Image Processing & Array Math
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Data Validation & Serialization
+pydantic>=2.0.0
+pyyaml>=6.0
+
+# LLM Providers & API Communication
+google-generativeai>=0.5.0
+python-dotenv>=1.0.0
+
+# Document & Archive Export
+reportlab>=4.0
+
+# Interactive UI & CLI Utilities
+gradio>=4.0.0
+tqdm>=4.65.0
+
+# Evaluation Benchmarks
+sacrebleu>=2.3.0
+jiwer>=3.0.0
+
+# Testing & Code Quality
+pytest>=7.0.0

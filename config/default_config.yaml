@@ -1,0 +1,77 @@
+# ==============================================================================
+# AI-Powered Manga Translation Pipeline - Master Configuration
+# ==============================================================================
+
+pipeline:
+  name: "manga-translation-pipeline"
+  version: "0.1.0"
+  stage_batched: true
+  enable_checkpoints: true
+  checkpoints_dir: "checkpoints"
+  output_dir: "output"
+
+# Stage 1: Detection & Diarization
+detection:
+  model_id: "ragavsachdeva/magiv2"
+  trust_remote_code: true
+  do_ocr: false
+  use_tqdm: true
+  batch_size: 1
+
+# Stage 2: Japanese OCR
+ocr:
+  model_id: "kha-white/manga-ocr-base"
+  confidence_threshold: 0.4
+  min_char_length: 1
+
+# Stage 3: SFX Classification
+sfx:
+  render_style: "viz_subtitle" # "viz_subtitle" (offset label) or "inpaint"
+  katakana_heuristic_enabled: true
+  short_token_threshold: 2
+
+# Stage 4: Rolling Context Memory
+context:
+  sliding_window_pages: 6
+  scene_summary_interval: 5
+  max_context_tokens: 2000
+  enable_user_context: true
+
+# Stage 5: Translation LLM
+translation:
+  primary_provider: "gemini"
+  gemini:
+    model_name: "gemini-2.5-flash"
+    temperature: 0.2
+    max_retries: 3
+    retry_initial_delay_seconds: 1.0
+    retry_backoff_factor: 2.0
+  fallback:
+    enabled: true
+    provider: "openai"
+    model_name: "gpt-4o-mini"
+  vision_mode:
+    enabled_by_default: false
+    auto_trigger_on_low_confidence: true
+    confidence_threshold: 0.5
+
+# Stage 6: Typesetting
+typesetting:
+  font_path: "assets/fonts/manga_font.ttf"
+  max_font_size: 24
+  min_font_size: 8
+  font_step: 1
+  dialogue_text_color: [0, 0, 0]        # Black
+  inpaint_bg_color: [255, 255, 255]     # Pure white bubble fill
+  sfx:
+    font_size_ratio: 0.70
+    font_color: [60, 60, 60]            # Muted dark gray
+    badge_bg_color: [255, 255, 255, 200] # Semi-transparent white
+    offset_padding_px: 4
+
+# Stage 7: Exporting
+export:
+  export_png: true
+  export_pdf: true
+  export_cbz: true
+  save_quality_report: true

@@ -1,0 +1,38 @@
+[
+  {
+    "id": 0,
+    "japanese": "おれは海賊王になる男だ！",
+    "pred": "おれは海賊王になる男だ！",
+    "ref": "おれは海賊王になる男だ！",
+    "reference": "I'm the man who will become the King of the Pirates!",
+    "ours_with_context": "I'm the man who will become King of the Pirates!",
+    "raw_baseline": "He is the man becoming a pirate king."
+  },
+  {
+    "id": 1,
+    "japanese": "行こう、みんな！",
+    "pred": "行こう、みんな！",
+    "ref": "行こう、みんな！",
+    "reference": "Let's go, everyone!",
+    "ours_with_context": "Let's go, everyone!",
+    "raw_baseline": "Go, everybody."
+  },
+  {
+    "id": 2,
+    "japanese": "まさか…あいつが戻ってきたのか？",
+    "pred": "まさか…あいつが戻ってきたのか？",
+    "ref": "まさか…あいつが戻ってきたのか？",
+    "reference": "No way... Has that guy returned?",
+    "ours_with_context": "Could it be... Has he returned?",
+    "raw_baseline": "No way, did that return?"
+  },
+  {
+    "id": 3,
+    "japanese": "ドーン！",
+    "pred": "ドーン！",
+    "ref": "ドーン！",
+    "reference": "BOOM!",
+    "ours_with_context": "BOOM!",
+    "raw_baseline": "Dawn!"
+  }
+]
