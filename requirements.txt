@@ -2,6 +2,8 @@
 torch>=2.0.0
 torchvision>=0.15.0
 transformers>=4.35.0
+einops>=0.7.0
+pulp>=2.7.0
 manga-ocr>=0.1.11
 
 # Image Processing & Array Math
