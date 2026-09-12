@@ -211,7 +211,7 @@ manga-translation-pipeline/
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/manga-translation-pipeline.git
+git clone https://github.com/mshaiel/manga-translation-pipeline.git
 cd manga-translation-pipeline
 
 # Install local dependencies
