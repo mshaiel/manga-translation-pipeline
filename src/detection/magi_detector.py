@@ -71,6 +71,17 @@ class MagiDetector:
         try:
             from transformers import AutoModel
 
+            # Compatibility shim for AutoBackbone across transformers versions
+            try:
+                from transformers.configuration_utils import PretrainedConfig
+                from transformers.models.auto.modeling_auto import AutoBackbone
+                from transformers.models.resnet.configuration_resnet import ResNetConfig
+
+                if hasattr(AutoBackbone, "_model_mapping") and ResNetConfig in AutoBackbone._model_mapping:
+                    AutoBackbone._model_mapping[PretrainedConfig] = AutoBackbone._model_mapping[ResNetConfig]
+            except Exception:
+                pass
+
             self.model = AutoModel.from_pretrained(
                 self.model_id,
                 trust_remote_code=self.trust_remote_code,
