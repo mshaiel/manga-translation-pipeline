@@ -74,6 +74,7 @@ class MagiDetector:
             self.model = AutoModel.from_pretrained(
                 self.model_id,
                 trust_remote_code=self.trust_remote_code,
+                disable_ocr=True,
             )
             self.model = self.model.to(self.device).eval()
             logger.info("Magi v2 loaded successfully.")
