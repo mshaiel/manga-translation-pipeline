@@ -222,10 +222,18 @@ class MangaTranslationPipeline:
         # STAGE 1: Chapter-Wide Detection & Diarization (Magi v2)
         # ======================================================================
         stage1_cp = self._load_checkpoint("stage1_detection.json") if resume_from_checkpoints else None
+        detections: list[PageDetection] = []
         if stage1_cp:
-            detections = [PageDetection.model_validate(p) for p in stage1_cp]
-            logger.info("Loaded Stage 1 detections from checkpoint.")
-        else:
+            candidate_detections = [PageDetection.model_validate(p) for p in stage1_cp]
+            total_boxes = sum(len(p.text_boxes) for p in candidate_detections)
+            if total_boxes == 0 and len(candidate_detections) > 0:
+                logger.warning("Existing detection checkpoint had 0 detected text boxes; re-running detection.")
+                stage1_cp = None
+            else:
+                detections = candidate_detections
+                logger.info("Loaded Stage 1 detections from checkpoint (%d text boxes).", total_boxes)
+
+        if not stage1_cp:
             with managed_gpu_memory("Stage 1: Magi v2 Detection & Diarization"):
                 detections = self.detector.detect_chapter(
                     chapter_pages=chapter_pages,
