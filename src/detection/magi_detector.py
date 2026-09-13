@@ -69,41 +69,49 @@ class MagiDetector:
 
         logger.info("Loading Magi v2 model from '%s' onto device '%s'...", self.model_id, self.device)
         try:
-            from transformers import AutoModel
+            from transformers import AutoConfig, AutoModel
+            from transformers.models.resnet.configuration_resnet import ResNetConfig
 
-            # Compatibility shim for AutoBackbone across transformers versions
+            # 1. Load and pre-configure Magi configuration with a valid ResNet-50 backbone config
+            config = AutoConfig.from_pretrained(self.model_id, trust_remote_code=self.trust_remote_code)
+            config.disable_ocr = True
+
+            resnet_backbone_cfg = ResNetConfig(
+                out_features=["stage2", "stage3", "stage4"],
+            )
+
+            if hasattr(config, "detection_model_config"):
+                config.detection_model_config.backbone_config = resnet_backbone_cfg
+                config.detection_model_config.backbone = None
+
+            # 2. Patch load_backbone directly to intercept unconfigured Conditional DETR backbones
             try:
-                from transformers.configuration_utils import PretrainedConfig
-                from transformers.models.auto.modeling_auto import AutoBackbone
-                from transformers.models.resnet.configuration_resnet import ResNetConfig
-                from transformers.models.resnet.modeling_resnet import ResNetBackbone
+                import transformers.backbone_utils as bb_utils
+                orig_load_bb = bb_utils.load_backbone
 
-                # 1. Register PretrainedConfig in model mapping
-                if hasattr(AutoBackbone, "_model_mapping"):
-                    AutoBackbone._model_mapping[PretrainedConfig] = ResNetBackbone
-
-                # 2. Patch from_config directly to intercept PretrainedConfig
-                orig_from_config = AutoBackbone.from_config.__func__
-
-                @classmethod
-                def _patched_from_config(cls, config, **kwargs):
-                    if type(config) is PretrainedConfig or config.__class__.__name__ == "PretrainedConfig":
-                        resnet_cfg = ResNetConfig(
-                            num_channels=3,
-                            depths=[3, 4, 6, 3],
-                            hidden_sizes=[256, 512, 1024, 2048],
+                def _safe_load_backbone(detr_cfg):
+                    if getattr(detr_cfg, "backbone_config", None) is None:
+                        detr_cfg.backbone_config = ResNetConfig(
+                            out_features=["stage2", "stage3", "stage4"],
                         )
-                        return ResNetBackbone(resnet_cfg)
-                    return orig_from_config(cls, config, **kwargs)
+                        detr_cfg.backbone = None
+                    return orig_load_bb(detr_cfg)
 
-                AutoBackbone.from_config = _patched_from_config
+                bb_utils.load_backbone = _safe_load_backbone
+
+                try:
+                    import transformers.models.conditional_detr.modeling_conditional_detr as detr_mod
+                    detr_mod.load_backbone = _safe_load_backbone
+                except Exception:
+                    pass
             except Exception as patch_err:
-                logger.debug("AutoBackbone shim notice: %s", patch_err)
+                logger.debug("Backbone patch notice: %s", patch_err)
 
+            # 3. Load model with pre-configured ResNet backbone
             self.model = AutoModel.from_pretrained(
                 self.model_id,
+                config=config,
                 trust_remote_code=self.trust_remote_code,
-                disable_ocr=True,
             )
             self.model = self.model.to(self.device).eval()
             logger.info("Magi v2 loaded successfully.")
