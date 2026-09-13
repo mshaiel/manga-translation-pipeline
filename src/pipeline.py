@@ -218,6 +218,19 @@ class MangaTranslationPipeline:
             else:
                 self.context_manager.set_chapter_info(title=chapter_name, user_context=str(user_context))
 
+        def _is_valid_detections(det_list: Sequence[PageDetection]) -> bool:
+            if not det_list:
+                return False
+            total_boxes = sum(len(p.text_boxes) for p in det_list)
+            if total_boxes == 0:
+                return False
+            # Ensure bounding boxes are not collapsed zero-area points
+            for page in det_list:
+                for tb in page.text_boxes:
+                    if tb.bbox.width > 0.005 and tb.bbox.height > 0.005:
+                        return True
+            return False
+
         # ======================================================================
         # STAGE 1: Chapter-Wide Detection & Diarization (Magi v2)
         # ======================================================================
@@ -225,13 +238,12 @@ class MangaTranslationPipeline:
         detections: list[PageDetection] = []
         if stage1_cp:
             candidate_detections = [PageDetection.model_validate(p) for p in stage1_cp]
-            total_boxes = sum(len(p.text_boxes) for p in candidate_detections)
-            if total_boxes == 0 and len(candidate_detections) > 0:
-                logger.warning("Existing detection checkpoint had 0 detected text boxes; re-running detection.")
+            if not _is_valid_detections(candidate_detections):
+                logger.warning("Stage 1 checkpoint is empty or contains collapsed bounding boxes; re-running detection.")
                 stage1_cp = None
             else:
                 detections = candidate_detections
-                logger.info("Loaded Stage 1 detections from checkpoint (%d text boxes).", total_boxes)
+                logger.info("Loaded Stage 1 detections from checkpoint (%d text boxes).", sum(len(p.text_boxes) for p in detections))
 
         if not stage1_cp:
             with managed_gpu_memory("Stage 1: Magi v2 Detection & Diarization"):
@@ -253,9 +265,16 @@ class MangaTranslationPipeline:
         # ======================================================================
         stage2_cp = self._load_checkpoint("stage2_ocr.json") if resume_from_checkpoints else None
         if stage2_cp:
-            detections = [PageDetection.model_validate(p) for p in stage2_cp]
-            logger.info("Loaded Stage 2 OCR detections from checkpoint.")
-        else:
+            candidate_ocr = [PageDetection.model_validate(p) for p in stage2_cp]
+            has_text = any(tb.ocr_text.strip() for p in candidate_ocr for tb in p.text_boxes)
+            if not _is_valid_detections(candidate_ocr) or not has_text:
+                logger.warning("Stage 2 OCR checkpoint is empty or missing transcribed text; re-running OCR.")
+                stage2_cp = None
+            else:
+                detections = candidate_ocr
+                logger.info("Loaded Stage 2 OCR detections from checkpoint.")
+
+        if not stage2_cp:
             with managed_gpu_memory("Stage 2: Manga OCR"):
                 detections = self.ocr_engine.process_chapter(
                     chapter_pages=chapter_pages,
@@ -278,9 +297,16 @@ class MangaTranslationPipeline:
         ordered_detections: list[PageDetection] = []
 
         if stage3_cp:
-            translations = [TranslationResponse.model_validate(t) for t in stage3_cp["translations"]]
-            ordered_detections = [PageDetection.model_validate(d) for d in stage3_cp["ordered_detections"]]
-            logger.info("Loaded Stage 3 Translations from checkpoint.")
+            candidate_trans = [TranslationResponse.model_validate(t) for t in stage3_cp.get("translations", [])]
+            candidate_ord = [PageDetection.model_validate(d) for d in stage3_cp.get("ordered_detections", [])]
+            has_trans = any(t.translations for t in candidate_trans)
+            if not _is_valid_detections(candidate_ord) or not has_trans:
+                logger.warning("Stage 3 translation checkpoint is empty or missing translations; re-running translation.")
+                stage3_cp = None
+            else:
+                translations = candidate_trans
+                ordered_detections = candidate_ord
+                logger.info("Loaded Stage 3 Translations from checkpoint.")
         else:
             logger.info("Executing Stage 3/4: Reading Order and LLM Translation...")
             for idx, det in enumerate(detections):

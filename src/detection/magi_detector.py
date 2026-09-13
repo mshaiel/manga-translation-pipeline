@@ -199,6 +199,23 @@ class MagiDetector:
         return self.parse_magi_results(raw_results, dimensions)
 
     @staticmethod
+    def _normalize_box(
+        raw_box: Sequence[float],
+        width: int | None,
+        height: int | None,
+    ) -> BoundingBox:
+        """Convert raw bounding box (pixel coordinates or normalized) into normalized BoundingBox."""
+        if len(raw_box) != 4:
+            raise ValueError(f"Expected 4 coordinates for BoundingBox, got {len(raw_box)}")
+        x1, y1, x2, y2 = [float(c) for c in raw_box]
+        if width and height and (x1 > 1.0 or x2 > 1.0 or y1 > 1.0 or y2 > 1.0):
+            x1 = x1 / width
+            y1 = y1 / height
+            x2 = x2 / width
+            y2 = y2 / height
+        return BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2)
+
+    @staticmethod
     def parse_magi_results(
         raw_results: Sequence[dict[str, Any]],
         dimensions: Sequence[tuple[int, int]] | None = None,
@@ -217,14 +234,14 @@ class MagiDetector:
         for p_idx, page_dict in enumerate(raw_results):
             w, h = dimensions[p_idx] if dimensions and p_idx < len(dimensions) else (None, None)
 
-            # 1. Parse Panels
+            # 1. Parse Panels (normalized to [0, 1])
             raw_panels = page_dict.get("panels", [])
             panels = [
-                PanelBox(id=i, bbox=BoundingBox.model_validate(p_box))
+                PanelBox(id=i, bbox=MagiDetector._normalize_box(p_box, w, h))
                 for i, p_box in enumerate(raw_panels)
             ]
 
-            # 2. Parse Characters
+            # 2. Parse Characters (normalized to [0, 1])
             raw_characters = page_dict.get("characters", [])
             char_cluster_labels = page_dict.get("character_cluster_labels", [])
             char_names = page_dict.get("character_names", [])
@@ -236,7 +253,7 @@ class MagiDetector:
                 characters.append(
                     CharacterBox(
                         id=i,
-                        bbox=BoundingBox.model_validate(c_box),
+                        bbox=MagiDetector._normalize_box(c_box, w, h),
                         cluster_id=cluster_id,
                         name=name,
                     )
@@ -244,13 +261,12 @@ class MagiDetector:
 
             # 3. Parse Associations: mapping text_idx -> char_idx
             raw_associations = page_dict.get("text_character_associations", [])
-            # Store as list of tuples (text_idx, char_idx)
             text_to_char_map: dict[int, int] = {}
             for assoc in raw_associations:
                 if len(assoc) == 2:
                     text_to_char_map[int(assoc[0])] = int(assoc[1])
 
-            # 4. Parse Text Boxes
+            # 4. Parse Text Boxes (normalized to [0, 1])
             raw_texts = page_dict.get("texts", [])
             is_essential_flags = page_dict.get("is_essential_text", [True] * len(raw_texts))
 
@@ -272,7 +288,7 @@ class MagiDetector:
                 text_boxes.append(
                     TextBox(
                         id=i,
-                        bbox=BoundingBox.model_validate(t_box),
+                        bbox=MagiDetector._normalize_box(t_box, w, h),
                         ocr_text="",
                         is_essential=bool(is_ess),
                         is_sfx=not bool(is_ess),
