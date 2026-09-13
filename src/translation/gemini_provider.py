@@ -19,9 +19,50 @@ from PIL import Image
 
 from src.translation.base_provider import TranslationProvider
 from src.translation.prompt_builder import build_translation_prompt
-from src.translation.schemas import TranslationRequest, TranslationResponse
+from src.translation.schemas import TranslationItem, TranslationRequest, TranslationResponse
 
 logger = logging.getLogger(__name__)
+
+# Protobuf/OpenAPI 3.0 schema strictly compatible with Google Gemini API
+# (Omits unsupported Pydantic v2 metadata fields like 'default', '$defs', 'title')
+GEMINI_TRANSLATION_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "translations": {
+            "type": "ARRAY",
+            "description": "List of translations mapping 1:1 by id to the requested text boxes",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "id": {
+                        "type": "INTEGER",
+                        "description": "Maps 1:1 back to Magi's text box index",
+                    },
+                    "english": {
+                        "type": "STRING",
+                        "description": "Natural, idiomatic English translation",
+                    },
+                    "translator_note": {
+                        "type": "STRING",
+                        "nullable": True,
+                        "description": "Optional translator note or ambiguity flag",
+                    },
+                },
+                "required": ["id", "english"],
+            },
+        },
+        "scene_summary_update": {
+            "type": "STRING",
+            "nullable": True,
+            "description": "Updated 2-3 sentence summary of current events if requested",
+        },
+        "confidence": {
+            "type": "NUMBER",
+            "description": "Self-reported translation confidence in [0.0, 1.0]",
+        },
+    },
+    "required": ["translations"],
+}
 
 
 def resolve_gemini_api_key(explicit_key: str | None = None) -> str | None:
@@ -76,6 +117,7 @@ class GeminiProvider(TranslationProvider):
         self.api_key = resolve_gemini_api_key(api_key)
 
         self._genai_client: Any = None
+        self._use_new_sdk: bool = False
 
     @property
     def provider_name(self) -> str:
@@ -86,7 +128,7 @@ class GeminiProvider(TranslationProvider):
         return self._model_name
 
     def _ensure_configured(self) -> None:
-        """Verify API key and configure google.generativeai SDK."""
+        """Verify API key and configure Gemini SDK (supporting both google.genai and google.generativeai)."""
         if not self.api_key:
             raise ValueError(
                 "Gemini API key not found. Please set the GEMINI_API_KEY environment variable "
@@ -94,14 +136,66 @@ class GeminiProvider(TranslationProvider):
             )
 
         if self._genai_client is None:
+            # 1. Prefer new official google.genai SDK if present
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
-                self._genai_client = genai
+                from google import genai
+                self._genai_client = genai.Client(api_key=self.api_key)
+                self._use_new_sdk = True
+                logger.debug("Configured official google.genai client.")
+                return
+            except (ImportError, AttributeError):
+                pass
+
+            # 2. Fallback to legacy google.generativeai SDK
+            try:
+                import google.generativeai as legacy_genai
+                legacy_genai.configure(api_key=self.api_key)
+                self._genai_client = legacy_genai
+                self._use_new_sdk = False
+                logger.debug("Configured google.generativeai legacy client.")
             except ImportError as err:
                 raise ImportError(
-                    "google-generativeai is not installed. Install via `pip install google-generativeai`."
+                    "Neither google-genai nor google-generativeai is installed. "
+                    "Install via `pip install google-genai` or `pip install google-generativeai`."
                 ) from err
+
+    def _parse_and_validate_response(
+        self,
+        raw_output_text: str,
+        request: TranslationRequest,
+    ) -> TranslationResponse:
+        """Sanitize raw LLM response text, parse JSON, and validate with Pydantic."""
+        raw_text = raw_output_text.strip()
+        # Clean markdown code fences if wrapped by the model
+        if raw_text.startswith("```"):
+            lines = raw_text.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            raw_text = "\n".join(lines).strip()
+
+        data = json.loads(raw_text)
+        parsed_response = TranslationResponse.model_validate(data)
+
+        # Ensure all requested text box IDs are present in the response
+        requested_ids = {tb.id for tb in request.text_boxes}
+        received_ids = {item.id for item in parsed_response.translations}
+        missing_ids = requested_ids - received_ids
+
+        if missing_ids:
+            logger.warning("Gemini response omitted text IDs: %s. Reconstructing missing items.", missing_ids)
+            for mid in missing_ids:
+                matching_tb = next((t for t in request.text_boxes if t.id == mid), None)
+                parsed_response.translations.append(
+                    TranslationItem(
+                        id=mid,
+                        english=matching_tb.japanese if matching_tb else "[Translation unavailable]",
+                        translator_note="Omitted in initial LLM response",
+                    )
+                )
+
+        return parsed_response
 
     def translate(self, request: TranslationRequest) -> TranslationResponse:
         """Translate a page's dialogue using Gemini with structured output enforcement.
@@ -113,7 +207,6 @@ class GeminiProvider(TranslationProvider):
             Validated TranslationResponse instance.
         """
         self._ensure_configured()
-        genai = self._genai_client
 
         # Build structured translation prompt
         request_summary = (request.page_index + 1) % 5 == 0
@@ -134,16 +227,6 @@ class GeminiProvider(TranslationProvider):
             except Exception as e:
                 logger.warning("Could not load vision crop from %s: %s", request.page_image_path, e)
 
-        # Configure GenerativeModel with enforced Pydantic response_schema
-        model = genai.GenerativeModel(
-            model_name=self._model_name,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                response_schema=TranslationResponse,
-                temperature=self.temperature,
-            ),
-        )
-
         # Execution loop with exponential backoff
         last_exception: Exception | None = None
         delay = self.initial_retry_delay
@@ -151,33 +234,51 @@ class GeminiProvider(TranslationProvider):
         for attempt in range(self.max_retries + 1):
             try:
                 logger.debug("Dispatching Gemini translation request (attempt %d/%d)...", attempt + 1, self.max_retries + 1)
-                response = model.generate_content(content_parts)
 
-                if not response or not response.text:
+                if self._use_new_sdk:
+                    # New google.genai SDK
+                    client = self._genai_client
+                    config_dict: dict[str, Any] = {
+                        "response_mime_type": "application/json",
+                        "response_schema": GEMINI_TRANSLATION_RESPONSE_SCHEMA,
+                        "temperature": self.temperature,
+                    }
+                    response = client.models.generate_content(
+                        model=self._model_name,
+                        contents=content_parts,
+                        config=config_dict,
+                    )
+                    raw_text = response.text if response else ""
+                else:
+                    # Legacy google.generativeai SDK
+                    genai = self._genai_client
+                    gen_config_kwargs: dict[str, Any] = {
+                        "response_mime_type": "application/json",
+                        "temperature": self.temperature,
+                    }
+                    try:
+                        gen_config = genai.GenerationConfig(
+                            response_schema=GEMINI_TRANSLATION_RESPONSE_SCHEMA,
+                            **gen_config_kwargs,
+                        )
+                    except Exception as schema_err:
+                        logger.warning(
+                            "Could not set response_schema on GenerationConfig (%s). Falling back to JSON mime-type.",
+                            schema_err,
+                        )
+                        gen_config = genai.GenerationConfig(**gen_config_kwargs)
+
+                    model = genai.GenerativeModel(
+                        model_name=self._model_name,
+                        generation_config=gen_config,
+                    )
+                    response = model.generate_content(content_parts)
+                    raw_text = response.text if response else ""
+
+                if not raw_text:
                     raise ValueError("Received empty response from Gemini API.")
 
-                # Parse and validate response against Pydantic schema
-                data = json.loads(response.text)
-                parsed_response = TranslationResponse.model_validate(data)
-
-                # Ensure all requested text box IDs are present in the response
-                requested_ids = {tb.id for tb in request.text_boxes}
-                received_ids = {item.id for item in parsed_response.translations}
-                missing_ids = requested_ids - received_ids
-
-                if missing_ids:
-                    logger.warning("Gemini response omitted text IDs: %s. Reconstructing missing items.", missing_ids)
-                    for mid in missing_ids:
-                        matching_tb = next((t for t in request.text_boxes if t.id == mid), None)
-                        parsed_response.translations.append(
-                            TranslationResponse(
-                                id=mid,
-                                english=matching_tb.japanese if matching_tb else "[Translation unavailable]",
-                                translator_note="Omitted in initial LLM response",
-                            )  # type: ignore[arg-type]
-                        )
-
-                return parsed_response
+                return self._parse_and_validate_response(raw_text, request)
 
             except Exception as err:
                 last_exception = err

@@ -94,3 +94,38 @@ class TestTranslationProviders:
         # Env variable fallback
         monkeypatch.setenv("GEMINI_API_KEY", "env_test_key")
         assert resolve_gemini_api_key(None) == "env_test_key"
+
+    def test_gemini_provider_response_parsing(self):
+        from src.translation.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider(api_key="test_dummy_key")
+        req = TranslationRequest(
+            page_index=0,
+            text_boxes=[
+                TranslationRequestItem(id=1, japanese="海賊王", is_sfx=False),
+                TranslationRequestItem(id=2, japanese="ドーン", is_sfx=True),
+            ],
+            context=RollingContext(),
+        )
+
+        # 1. Test clean markdown-fenced JSON parsing
+        fenced_json = """```json
+        {
+            "translations": [
+                {"id": 1, "english": "Pirate King", "translator_note": null}
+            ],
+            "scene_summary_update": "Luffy arrives.",
+            "confidence": 0.98
+        }
+        ```"""
+
+        # Notice ID 2 is missing from response: should be auto-reconstructed
+        res = provider._parse_and_validate_response(fenced_json, req)
+        assert len(res.translations) == 2
+        assert res.translations[0].id == 1
+        assert res.translations[0].english == "Pirate King"
+        assert res.translations[1].id == 2
+        assert res.translations[1].english == "ドーン"
+        assert res.scene_summary_update == "Luffy arrives."
+        assert res.confidence == 0.98
+
