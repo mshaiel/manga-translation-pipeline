@@ -13,11 +13,13 @@ from typing import Any
 from src.translation.schemas import RollingContext, TextBox, TranslationRequestItem
 
 
-def build_dialogue_payload(text_boxes: Sequence[TextBox]) -> list[dict[str, Any]]:
-    """Convert ordered TextBoxes into clean JSON items for the translation prompt.
+def build_dialogue_payload(
+    text_boxes: Sequence[TextBox | TranslationRequestItem],
+) -> list[dict[str, Any]]:
+    """Convert ordered TextBoxes or TranslationRequestItems into clean JSON items for the translation prompt.
 
     Args:
-        text_boxes: TextBoxes sorted in manga reading order.
+        text_boxes: TextBoxes or TranslationRequestItems sorted in manga reading order.
 
     Returns:
         List of dictionaries with keys: 'id', 'speaker', 'japanese', 'is_sfx'.
@@ -25,15 +27,20 @@ def build_dialogue_payload(text_boxes: Sequence[TextBox]) -> list[dict[str, Any]
     items: list[dict[str, Any]] = []
 
     for tb in text_boxes:
-        speaker_val: str | None = tb.speaker_name
-        if not speaker_val and tb.speaker_cluster_id is not None:
-            speaker_val = f"Cluster_{tb.speaker_cluster_id}"
+        if isinstance(tb, TranslationRequestItem):
+            items.append(tb.model_dump(exclude_none=False))
+            continue
+
+        speaker_val: str | None = getattr(tb, "speaker", None) or getattr(tb, "speaker_name", None)
+        cluster_id = getattr(tb, "speaker_cluster_id", None)
+        if not speaker_val and cluster_id is not None:
+            speaker_val = f"Cluster_{cluster_id}"
 
         item = TranslationRequestItem(
             id=tb.id,
             speaker=speaker_val,
-            japanese=tb.ocr_text,
-            is_sfx=tb.is_sfx,
+            japanese=getattr(tb, "japanese", None) or getattr(tb, "ocr_text", ""),
+            is_sfx=bool(getattr(tb, "is_sfx", False)),
         )
         items.append(item.model_dump(exclude_none=False))
 
@@ -41,7 +48,7 @@ def build_dialogue_payload(text_boxes: Sequence[TextBox]) -> list[dict[str, Any]
 
 
 def build_translation_prompt(
-    text_boxes: Sequence[TextBox],
+    text_boxes: Sequence[TextBox | TranslationRequestItem],
     context: RollingContext,
     vision_mode: bool = False,
     request_scene_summary: bool = False,

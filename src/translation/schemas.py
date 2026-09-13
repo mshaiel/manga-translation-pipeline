@@ -182,6 +182,21 @@ class TranslationRequestItem(BaseModel):
     japanese: str = Field(..., description="Original OCR Japanese text")
     is_sfx: bool = Field(default=False, description="Whether this item is a sound effect")
 
+    @property
+    def speaker_name(self) -> str | None:
+        """Alias for speaker for duck typing with TextBox."""
+        return self.speaker
+
+    @property
+    def speaker_cluster_id(self) -> int | None:
+        """Alias for speaker_cluster_id for duck typing with TextBox."""
+        return None
+
+    @property
+    def ocr_text(self) -> str:
+        """Alias for ocr_text for duck typing with TextBox."""
+        return self.japanese
+
 
 class TranslationItem(BaseModel):
     """Single translated line returned by the LLM."""

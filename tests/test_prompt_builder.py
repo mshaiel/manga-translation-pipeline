@@ -46,3 +46,32 @@ class TestPromptBuilder:
 
         assert "MULTIMODAL VERIFICATION" in prompt
         assert "SCENE SUMMARY" in prompt
+
+    def test_build_dialogue_payload_with_translation_request_items(self):
+        from src.translation.schemas import TranslationRequestItem
+
+        item1 = TranslationRequestItem(id=0, speaker="Zoro", japanese="何だ？", is_sfx=False)
+        item2 = TranslationRequestItem(id=1, speaker=None, japanese="ザッ", is_sfx=True)
+
+        payload = build_dialogue_payload([item1, item2])
+        assert len(payload) == 2
+        assert payload[0]["id"] == 0
+        assert payload[0]["speaker"] == "Zoro"
+        assert payload[0]["japanese"] == "何だ？"
+        assert payload[1]["is_sfx"] is True
+
+        # Test prompt building directly with TranslationRequestItems
+        context = RollingContext()
+        prompt = build_translation_prompt([item1, item2], context)
+        assert "何だ？" in prompt
+        assert "Zoro" in prompt
+
+    def test_translation_request_item_duck_typing(self):
+        from src.translation.schemas import TranslationRequestItem
+
+        item = TranslationRequestItem(id=5, speaker="Sanji", japanese="クソ野郎", is_sfx=False)
+        # Verify duck typing properties match TextBox interface
+        assert item.speaker_name == "Sanji"
+        assert item.speaker_cluster_id is None
+        assert item.ocr_text == "クソ野郎"
+
