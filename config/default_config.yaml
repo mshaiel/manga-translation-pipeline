@@ -37,6 +37,10 @@ context:
   max_context_tokens: 2000
   enable_user_context: true
 
+# Reading Order
+reading_order:
+  preserve_magi_order: true
+
 # Stage 5: Translation LLM
 translation:
   primary_provider: "gemini"
@@ -50,10 +54,7 @@ translation:
     enabled: true
     provider: "openai"
     model_name: "gpt-4o-mini"
-  vision_mode:
-    enabled_by_default: false
-    auto_trigger_on_low_confidence: true
-    confidence_threshold: 0.5
+  vision_mode: "auto"
 
 # Stage 6: Typesetting
 typesetting:
@@ -63,6 +64,10 @@ typesetting:
   font_step: 1
   dialogue_text_color: [0, 0, 0]        # Black
   inpaint_bg_color: [255, 255, 255]     # Pure white bubble fill
+  mask_dilation_h_ratio: 0.80
+  mask_dilation_v_ratio: 0.15
+  min_dilation_h_px: 20
+  min_dilation_v_px: 8
   sfx:
     font_size_ratio: 0.70
     font_color: [60, 60, 60]            # Muted dark gray

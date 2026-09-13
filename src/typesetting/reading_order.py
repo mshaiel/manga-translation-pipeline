@@ -29,12 +29,14 @@ def compute_intersection_area(b1: BoundingBox, b2: BoundingBox) -> float:
 
 
 def order_panels_manga(panels: list[PanelBox]) -> list[PanelBox]:
-    """Sort manga panels in standard Right-to-Left, Top-to-Bottom reading order.
+    """Sort manga panels in standard Right-to-Left, Top-to-Bottom reading order using horizontal tier clustering.
 
     Algorithm:
-    1. Cluster panels into vertical columns based on horizontal (X) overlap.
-    2. Sort columns from Right to Left (highest X center first).
-    3. Sort panels within each column from Top to Bottom (lowest Y first).
+    1. Sort panels by top edge (bbox.y1 ascending).
+    2. Cluster panels into horizontal tiers (rows) if vertical center falls within Y range
+       of an existing tier (or Y overlap > 30% of panel height).
+    3. Sort tiers by minimum Y1 (top to bottom).
+    4. Within each tier, sort panels from Right to Left (highest X2 first).
 
     Args:
         panels: Unsorted list of PanelBox objects.
@@ -46,53 +48,44 @@ def order_panels_manga(panels: list[PanelBox]) -> list[PanelBox]:
         return []
 
     if len(panels) == 1:
-        single = panels[0].model_copy(update={"reading_order_index": 0})
-        return [single]
+        return [panels[0].model_copy(update={"reading_order_index": 0})]
 
-    # Partition panels into columns
-    columns: list[list[PanelBox]] = []
+    # 1. Sort panels initially by top edge ascending
+    sorted_by_y = sorted(panels, key=lambda p: p.bbox.y1)
+    tiers: list[list[PanelBox]] = []
 
-    # Sort candidates initially by rightmost edge descending
-    sorted_by_x = sorted(panels, key=lambda p: (p.bbox.x2, p.bbox.x1), reverse=True)
+    for panel in sorted_by_y:
+        matched_tier = False
+        p_center_y = (panel.bbox.y1 + panel.bbox.y2) / 2.0
+        p_h = max(0.001, panel.bbox.height)
 
-    for panel in sorted_by_x:
-        matched_col = False
-        p_x_center = (panel.bbox.x1 + panel.bbox.x2) / 2.0
+        for tier in tiers:
+            tier_y1 = min(p.bbox.y1 for p in tier)
+            tier_y2 = max(p.bbox.y2 for p in tier)
 
-        for col in columns:
-            # Check if panel horizontally overlaps with this column
-            col_x1 = min(p.bbox.x1 for p in col)
-            col_x2 = max(p.bbox.x2 for p in col)
-            col_width = col_x2 - col_x1
+            overlap_y1 = max(panel.bbox.y1, tier_y1)
+            overlap_y2 = min(panel.bbox.y2, tier_y2)
+            overlap_h = max(0.0, overlap_y2 - overlap_y1)
 
-            # Check overlap or proximity
-            overlap_x1 = max(panel.bbox.x1, col_x1)
-            overlap_x2 = min(panel.bbox.x2, col_x2)
-            overlap_w = max(0.0, overlap_x2 - overlap_x1)
-
-            # If there is meaningful horizontal overlap, assign to this column
-            if col_width > 0 and (overlap_w / min(panel.bbox.width, col_width) > 0.3 or abs(p_x_center - (col_x1 + col_x2) / 2.0) < 0.15):
-                col.append(panel)
-                matched_col = True
+            # Check if vertical center falls within tier or Y overlap > 30% of panel height
+            if (tier_y1 <= p_center_y <= tier_y2) or (overlap_h / p_h > 0.30):
+                tier.append(panel)
+                matched_tier = True
                 break
 
-        if not matched_col:
-            columns.append([panel])
+        if not matched_tier:
+            tiers.append([panel])
 
-    # Sort columns from Right to Left (highest average X first)
-    def col_rightness(col: list[PanelBox]) -> float:
-        return sum((p.bbox.x1 + p.bbox.x2) / 2.0 for p in col) / len(col)
+    # 3. Sort tiers by min y1 (top to bottom)
+    tiers.sort(key=lambda t: min(p.bbox.y1 for p in t))
 
-    columns.sort(key=col_rightness, reverse=True)
-
-    # Sort panels within each column from Top to Bottom
+    # 4. Within each tier, sort panels from Right to Left (highest x2 first)
     ordered_panels: list[PanelBox] = []
     global_idx = 0
-    for col in columns:
-        col.sort(key=lambda p: p.bbox.y1)
-        for p in col:
-            ordered = p.model_copy(update={"reading_order_index": global_idx})
-            ordered_panels.append(ordered)
+    for tier in tiers:
+        tier.sort(key=lambda p: p.bbox.x2, reverse=True)
+        for p in tier:
+            ordered_panels.append(p.model_copy(update={"reading_order_index": global_idx}))
             global_idx += 1
 
     return ordered_panels
@@ -191,17 +184,16 @@ def order_text_boxes_within_panel(text_boxes: list[TextBox]) -> list[TextBox]:
     return ordered
 
 
-def sort_page_dialogue(page: PageDetection) -> list[TextBox]:
+def sort_page_dialogue(page: PageDetection, preserve_magi_order: bool = False) -> list[TextBox]:
     """Establish reading order for all dialogue and SFX on a manga page.
 
-    1. Orders panels Right-to-Left, Top-to-Bottom.
-    2. Assigns each text box to its containing panel.
-    3. Orders text boxes within each panel.
-    4. Appends/prepends unassociated boundary narration.
-    5. Sets `reading_order_index` sequentially on all TextBoxes.
+    1. If preserve_magi_order is True, respects Magi's native topological cut order.
+    2. Otherwise, clusters panels into horizontal tiers and orders text boxes.
+    3. Sets `reading_order_index` sequentially on all TextBoxes.
 
     Args:
         page: PageDetection containing panels and text boxes.
+        preserve_magi_order: If True, preserves Magi's native topological order.
 
     Returns:
         List of TextBoxes ordered by reading order.
@@ -209,9 +201,9 @@ def sort_page_dialogue(page: PageDetection) -> list[TextBox]:
     if not page.text_boxes:
         return []
 
-    # If no panels were detected, sort text boxes directly by page coordinates
-    if not page.panels:
-        ordered_direct = order_text_boxes_within_panel(page.text_boxes)
+    # If preserve_magi_order is True or no panels, preserve native Magi order
+    if preserve_magi_order or not page.panels:
+        ordered_direct = page.text_boxes if preserve_magi_order else order_text_boxes_within_panel(page.text_boxes)
         return [
             tb.model_copy(update={"reading_order_index": i})
             for i, tb in enumerate(ordered_direct)
@@ -250,3 +242,130 @@ def sort_page_dialogue(page: PageDetection) -> list[TextBox]:
     ]
 
     return result
+
+
+class _DisjointSet:
+    """Lightweight Union-Find structure for clustering text boxes."""
+
+    def __init__(self, size: int) -> None:
+        self.parent = list(range(size))
+
+    def find(self, i: int) -> int:
+        if self.parent[i] == i:
+            return i
+        self.parent[i] = self.find(self.parent[i])
+        return self.parent[i]
+
+    def union(self, i: int, j: int) -> None:
+        root_i = self.find(i)
+        root_j = self.find(j)
+        if root_i != root_j:
+            self.parent[root_i] = root_j
+
+
+def _should_group_boxes(
+    a: TextBox,
+    b: TextBox,
+    text_char_map: dict[int, int] | None = None,
+) -> bool:
+    """Check whether two text boxes belong to the same multi-column speech bubble.
+
+    Criteria:
+    1. Same panel assignment.
+    2. Both are dialogue (is_essential=True, is_sfx=False).
+    3. Neither box's OCR text is empty.
+    4. Same speaker: BOTH have confirmed character association pointing to the same character.
+    5. Vertical overlap >= 70%.
+    6. Horizontal gap <= 50% of the narrower box's width.
+    """
+    # 1. Same panel
+    if a.panel_id != b.panel_id:
+        return False
+
+    # 2. Both are dialogue (not SFX)
+    if not (a.is_essential and not a.is_sfx and b.is_essential and not b.is_sfx):
+        return False
+
+    # 3. Neither box's OCR text is empty
+    if not a.ocr_text or not a.ocr_text.strip() or not b.ocr_text or not b.ocr_text.strip():
+        return False
+
+    # 4. Same speaker: BOTH must have confirmed character association or matching speaker
+    matched_speaker = False
+    if text_char_map:
+        ca = text_char_map.get(a.id)
+        cb = text_char_map.get(b.id)
+        if ca is not None and cb is not None and ca == cb:
+            matched_speaker = True
+    if not matched_speaker and a.speaker_cluster_id is not None and b.speaker_cluster_id is not None:
+        if a.speaker_cluster_id == b.speaker_cluster_id:
+            matched_speaker = True
+    if not matched_speaker and a.speaker_name and b.speaker_name:
+        if a.speaker_name == b.speaker_name:
+            matched_speaker = True
+
+    if not matched_speaker:
+        return False
+
+    # 5. Vertical overlap >= 70%
+    overlap_y1 = max(a.bbox.y1, b.bbox.y1)
+    overlap_y2 = min(a.bbox.y2, b.bbox.y2)
+    overlap_h = max(0.0, overlap_y2 - overlap_y1)
+    min_h = min(a.bbox.height, b.bbox.height)
+    if min_h <= 0.0 or (overlap_h / min_h) < 0.70:
+        return False
+
+    # 6. Horizontal gap <= 50% of the narrower box's width
+    gap_x = max(0.0, max(a.bbox.x1, b.bbox.x1) - min(a.bbox.x2, b.bbox.x2))
+    min_w = min(a.bbox.width, b.bbox.width)
+    if min_w <= 0.0 or (gap_x / min_w) > 0.50:
+        return False
+
+    return True
+
+
+def group_same_bubble_texts(
+    text_boxes: list[TextBox],
+    text_character_associations: list[tuple[int, int]] | None = None,
+) -> dict[int, list[TextBox]]:
+    """Group adjacent text boxes forming a single multi-column speech bubble after OCR.
+
+    Args:
+        text_boxes: Sequence of detected TextBoxes on a page with ocr_text populated.
+        text_character_associations: Optional list of (text_box_id, character_id) associations.
+
+    Returns:
+        Dict mapping group_id (lowest text box ID in the group) to the list of TextBoxes
+        in that group, sorted Right-to-Left (highest bbox.x2 first).
+    """
+    if not text_boxes:
+        return {}
+
+    n = len(text_boxes)
+    if n == 1:
+        return {text_boxes[0].id: [text_boxes[0]]}
+
+    text_char_map: dict[int, int] = {}
+    if text_character_associations:
+        for tb_id, char_id in text_character_associations:
+            text_char_map[tb_id] = char_id
+
+    dsu = _DisjointSet(n)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _should_group_boxes(text_boxes[i], text_boxes[j], text_char_map=text_char_map):
+                dsu.union(i, j)
+
+    clusters: dict[int, list[TextBox]] = {}
+    for i in range(n):
+        root = dsu.find(i)
+        clusters.setdefault(root, []).append(text_boxes[i])
+
+    bubble_groups: dict[int, list[TextBox]] = {}
+    for group in clusters.values():
+        # Sort columns Right-to-Left (highest X2 first) for Japanese reading order
+        group.sort(key=lambda tb: tb.bbox.x2, reverse=True)
+        lowest_id = min(tb.id for tb in group)
+        bubble_groups[lowest_id] = group
+
+    return bubble_groups

@@ -28,17 +28,20 @@ from src.context.memory_manager import RollingContextManager
 from src.detection.magi_detector import MagiDetector
 from src.export.exporter import ChapterExporter
 from src.ocr.manga_ocr_engine import MangaOcrEngine
+from src.ocr.sfx_classifier import is_punctuation_only
 from src.translation.base_provider import TranslationProvider
 from src.translation.gemini_provider import GeminiProvider
 from src.translation.mock_provider import MockTranslationProvider
 from src.translation.openai_provider import OpenAIProvider
 from src.translation.schemas import (
     PageDetection,
+    TextBox,
+    TranslationItem,
     TranslationRequest,
     TranslationRequestItem,
     TranslationResponse,
 )
-from src.typesetting.reading_order import sort_page_dialogue
+from src.typesetting.reading_order import group_same_bubble_texts, sort_page_dialogue
 from src.typesetting.renderer import MangaTypesetter
 from src.utils.gpu_utils import managed_gpu_memory
 from src.utils.quality_report import generate_quality_report, save_quality_report
@@ -133,6 +136,10 @@ class MangaTranslationPipeline:
             min_font_size=ts_cfg.get("min_font_size", 8),
             dialogue_text_color=tuple(ts_cfg.get("dialogue_text_color", [0, 0, 0])),
             inpaint_bg_color=tuple(ts_cfg.get("inpaint_bg_color", [255, 255, 255])),
+            mask_dilation_h_ratio=float(ts_cfg.get("mask_dilation_h_ratio", 0.80)),
+            mask_dilation_v_ratio=float(ts_cfg.get("mask_dilation_v_ratio", 0.15)),
+            min_dilation_h_px=int(ts_cfg.get("min_dilation_h_px", 20)),
+            min_dilation_v_px=int(ts_cfg.get("min_dilation_v_px", 8)),
         )
 
         # Exporter
@@ -297,6 +304,9 @@ class MangaTranslationPipeline:
         stage3_cp = self._load_checkpoint("stage3_translation.json") if resume_from_checkpoints else None
         translations: list[TranslationResponse] = []
         ordered_detections: list[PageDetection] = []
+        all_bubble_groups: list[dict[int, list[TextBox]]] = []
+
+        preserve_magi = self.config.get("reading_order", {}).get("preserve_magi_order", True)
 
         if stage3_cp:
             candidate_trans = [TranslationResponse.model_validate(t) for t in stage3_cp.get("translations", [])]
@@ -308,42 +318,108 @@ class MangaTranslationPipeline:
             else:
                 translations = candidate_trans
                 ordered_detections = candidate_ord
+                # Reconstruct bubble groups for each page
+                for det in ordered_detections:
+                    all_bubble_groups.append(
+                        group_same_bubble_texts(det.text_boxes, det.text_character_associations)
+                    )
                 logger.info("Loaded Stage 3 Translations from checkpoint.")
-        else:
+
+        if not stage3_cp:
             logger.info("Executing Stage 3/4: Reading Order and LLM Translation...")
             for idx, det in enumerate(detections):
                 # 1. Establish Right-to-Left, Top-to-Bottom reading order
-                ordered_boxes = sort_page_dialogue(det)
+                ordered_boxes = sort_page_dialogue(det, preserve_magi_order=preserve_magi)
                 page_det = det.model_copy(update={"text_boxes": ordered_boxes})
                 ordered_detections.append(page_det)
 
                 # 2. Register characters on this page to cumulative registry
                 self.context_manager.register_page_characters(idx, page_det)
 
-                # 3. Assemble Translation Request
-                trans_items = [
-                    TranslationRequestItem(
-                        id=tb.id,
-                        speaker=tb.speaker_name or (f"Cluster_{tb.speaker_cluster_id}" if tb.speaker_cluster_id is not None else None),
-                        japanese=tb.ocr_text,
-                        is_sfx=tb.is_sfx,
+                # 3. Post-OCR bubble grouping: cluster adjacent vertical columns into unified bubble groups
+                bubble_groups = group_same_bubble_texts(ordered_boxes, det.text_character_associations)
+                all_bubble_groups.append(bubble_groups)
+
+                # 4. Assemble Translation Request (filtering punctuation-only boxes)
+                trans_items: list[TranslationRequestItem] = []
+                for group_id, group_tbs in bubble_groups.items():
+                    # Filter punctuation-only text (skip standalone '?', '!', etc.)
+                    if all(is_punctuation_only(tb.ocr_text) for tb in group_tbs):
+                        logger.info("  Skipping punctuation-only box/group %d: '%s'", group_id, group_tbs[0].ocr_text)
+                        continue
+
+                    # Concatenate Japanese OCR text with NO separator for multi-column text
+                    concatenated_text = "".join(tb.ocr_text.strip() for tb in group_tbs)
+                    speaker_val = group_tbs[0].speaker_name or (
+                        f"Cluster_{group_tbs[0].speaker_cluster_id}"
+                        if group_tbs[0].speaker_cluster_id is not None
+                        else None
                     )
-                    for tb in ordered_boxes
-                ]
+                    is_sfx = all(tb.is_sfx for tb in group_tbs)
+
+                    trans_items.append(
+                        TranslationRequestItem(
+                            id=group_id,
+                            speaker=speaker_val,
+                            japanese=concatenated_text,
+                            is_sfx=is_sfx,
+                        )
+                    )
+
+                # 5. Resolve Vision Mode ("auto", "always", "never")
+                v_mode_cfg = self.config.get("translation", {}).get("vision_mode", "auto")
+                if isinstance(v_mode_cfg, dict):
+                    v_mode_str = "always" if v_mode_cfg.get("enabled_by_default") else (
+                        "auto" if v_mode_cfg.get("auto_trigger_on_low_confidence") else "never"
+                    )
+                elif isinstance(v_mode_cfg, str):
+                    v_mode_str = v_mode_cfg.lower()
+                elif isinstance(v_mode_cfg, bool):
+                    v_mode_str = "always" if v_mode_cfg else "never"
+                else:
+                    v_mode_str = "auto"
+
+                if v_mode_str == "always":
+                    page_vision_mode = True
+                elif v_mode_str == "never":
+                    page_vision_mode = False
+                else:  # "auto"
+                    page_vision_mode = any(not tb.ocr_text or len(tb.ocr_text.strip()) < 2 for tb in ordered_boxes)
 
                 req = TranslationRequest(
                     page_index=idx,
                     text_boxes=trans_items,
                     context=self.context_manager.get_context(),
                     page_image_path=str(chapter_pages[idx]),
-                    vision_mode=False,
+                    vision_mode=page_vision_mode,
                 )
 
-                # 4. Dispatch Translation API call
+                # 6. Dispatch Translation API call
                 trans_response = self.translator.translate(req)
+
+                # 7. Safety Net: Ensure all requested IDs have a translation entry
+                expected_ids = {item.id for item in trans_items}
+                returned_ids = {t.id for t in trans_response.translations}
+                missing_ids = expected_ids - returned_ids
+
+                if missing_ids:
+                    logger.warning(
+                        "Translation response omitted %d items: %s. Appending fallback placeholders.",
+                        len(missing_ids),
+                        missing_ids,
+                    )
+                    for mid in missing_ids:
+                        trans_response.translations.append(
+                            TranslationItem(
+                                id=mid,
+                                english="[...]",
+                                translator_note="Omitted by LLM",
+                            )
+                        )
+
                 translations.append(trans_response)
 
-                # 5. Append translated dialogue to rolling context (last 6 pages)
+                # 8. Append translated dialogue to rolling context (last 6 pages)
                 self.context_manager.append_translated_page(
                     page_index=idx,
                     text_boxes=ordered_boxes,
@@ -366,10 +442,17 @@ class MangaTranslationPipeline:
         translated_images: list[Image.Image] = []
 
         for idx, page_path in enumerate(chapter_pages):
+            det = ordered_detections[idx]
+            b_groups = (
+                all_bubble_groups[idx]
+                if idx < len(all_bubble_groups)
+                else group_same_bubble_texts(det.text_boxes, det.text_character_associations)
+            )
             typeset_img = self.typesetter.typeset_page(
                 page_image=page_path,
-                detection=ordered_detections[idx],
+                detection=det,
                 translation=translations[idx],
+                bubble_groups=b_groups,
             )
             translated_images.append(typeset_img)
 

@@ -78,3 +78,49 @@ class TestMangaTypesetter:
         output_img = typesetter.typeset_page(img, detection, translation)
         assert isinstance(output_img, Image.Image)
         assert output_img.size == (400, 600)
+
+    def test_create_dilated_mask_panel_constrained(self):
+        typesetter = MangaTypesetter()
+        mask = typesetter.create_dilated_mask(
+            image_shape=(500, 500),
+            bbox_pixels=(100, 100, 150, 300),
+            panel_pixels=(50, 50, 200, 400),
+        )
+        assert mask.shape == (500, 500)
+        assert mask[100, 100] == 255
+        # Pixels outside panel bounds must be strictly 0
+        assert np.all(mask[:50, :] == 0)
+        assert np.all(mask[400:, :] == 0)
+        assert np.all(mask[:, :50] == 0)
+        assert np.all(mask[:, 200:] == 0)
+
+    def test_typeset_page_with_bubble_groups(self):
+        typesetter = MangaTypesetter()
+        img = Image.new("RGB", (400, 600), color=(200, 200, 200))
+
+        tb1 = TextBox(id=1, bbox=[0.20, 0.10, 0.25, 0.30], ocr_text="お前は", is_essential=True)
+        tb2 = TextBox(id=2, bbox=[0.15, 0.10, 0.19, 0.30], ocr_text="誰だ？", is_essential=True)
+        tb_punct = TextBox(id=3, bbox=[0.50, 0.50, 0.55, 0.55], ocr_text="？", is_essential=True)
+
+        detection = PageDetection(
+            page_index=0,
+            image_width=400,
+            image_height=600,
+            text_boxes=[tb1, tb2, tb_punct],
+        )
+
+        translation = TranslationResponse(
+            translations=[
+                TranslationItem(id=1, english="Who are you?"),
+            ],
+            scene_summary_update="Questioning scene",
+            confidence=0.95,
+        )
+
+        bubble_groups = {
+            1: [tb1, tb2],
+            3: [tb_punct],
+        }
+
+        output_img = typesetter.typeset_page(img, detection, translation, bubble_groups=bubble_groups)
+        assert isinstance(output_img, Image.Image)

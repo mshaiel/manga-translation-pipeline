@@ -136,8 +136,8 @@ class MangaOcrEngine:
         updated_text_boxes: list[TextBox] = []
 
         for tb in detection.text_boxes:
-            # Crop text region using normalized coordinates
-            crop = crop_image(pil_img, tb.bbox.to_list(), normalized=True)
+            # Crop text region using normalized coordinates with 5% margin per edge
+            crop = crop_image(pil_img, tb.bbox.to_list(), normalized=True, expand_ratio=0.05)
 
             # Perform OCR on the PIL crop
             if self.mock_mode or self.mocr is None:

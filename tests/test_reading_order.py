@@ -105,3 +105,65 @@ class TestReadingOrder:
         assert sorted_boxes[0].reading_order_index == 0
         assert sorted_boxes[1].id == 102
         assert sorted_boxes[1].reading_order_index == 1
+
+    def test_preserve_magi_order(self):
+        t1 = TextBox(id=1, bbox=[0.1, 0.1, 0.2, 0.2])
+        t2 = TextBox(id=2, bbox=[0.8, 0.8, 0.9, 0.9])
+        p1 = PanelBox(id=1, bbox=[0.0, 0.0, 1.0, 1.0])
+        page = PageDetection(page_index=0, panels=[p1], text_boxes=[t1, t2])
+
+        ordered = sort_page_dialogue(page, preserve_magi_order=True)
+        assert ordered[0].id == 1
+        assert ordered[1].id == 2
+
+    def test_group_same_bubble_texts_adjacent_columns(self):
+        from src.typesetting.reading_order import group_same_bubble_texts
+
+        t_right = TextBox(
+            id=1,
+            bbox=[0.55, 0.10, 0.60, 0.30],
+            ocr_text="お前は",
+            is_essential=True,
+            is_sfx=False,
+            panel_id=1,
+            speaker_cluster_id=5,
+        )
+        t_left = TextBox(
+            id=2,
+            bbox=[0.50, 0.10, 0.54, 0.30],
+            ocr_text="誰だ？",
+            is_essential=True,
+            is_sfx=False,
+            panel_id=1,
+            speaker_cluster_id=5,
+        )
+        groups = group_same_bubble_texts([t_left, t_right])
+        assert len(groups) == 1
+        assert 1 in groups
+        assert groups[1][0].id == 1
+        assert groups[1][1].id == 2
+
+    def test_group_same_bubble_texts_different_speakers_not_grouped(self):
+        from src.typesetting.reading_order import group_same_bubble_texts
+
+        t1 = TextBox(
+            id=1,
+            bbox=[0.55, 0.10, 0.60, 0.30],
+            ocr_text="俺だ",
+            is_essential=True,
+            is_sfx=False,
+            panel_id=1,
+            speaker_cluster_id=5,
+        )
+        t2 = TextBox(
+            id=2,
+            bbox=[0.50, 0.10, 0.54, 0.30],
+            ocr_text="私よ",
+            is_essential=True,
+            is_sfx=False,
+            panel_id=1,
+            speaker_cluster_id=6,
+        )
+        groups = group_same_bubble_texts([t1, t2])
+        assert len(groups) == 2
+        assert 1 in groups and 2 in groups

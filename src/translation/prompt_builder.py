@@ -81,16 +81,20 @@ def build_translation_prompt(
 
     # 3. Assemble Instructions
     instructions = [
-        "- Translate naturally, not literally. Manga dialogue should feel alive and punchy.",
-        "- Preserve each character's speech style, tone, and distinct personality.",
-        "- For SFX (is_sfx=true), provide a short, dynamic English comic equivalent (e.g., 'BOOM!', 'THUD', 'RUMBLE').",
-        "- Use the speaker attribution and rolling context to resolve pronouns — Japanese frequently drops grammatical subjects.",
+        "- Translate all dialogue and narration naturally into fluent, punchy English that reads like a professional manga translation (think Viz Media or official English releases).",
+        "- Use contractions, slang, exclamations, and varied sentence structure. Avoid stiff or literal translations. Manga dialogue should feel alive and match the energy of the scene.",
+        "- Preserve each character's distinct speech patterns. A tough character should sound tough. A timid character should sound timid.",
+        "- For SFX (is_sfx=true), provide a short English comic sound equivalent (BOOM, CRASH, THUD, etc.).",
+        "- Use the speaker attribution and rolling context to resolve omitted subjects — Japanese frequently drops pronouns.",
+        "- If the Japanese text for an item is empty, garbled, or unrecognizable, return the original text as-is in the 'english' field and add a translator_note saying \"OCR unclear\".",
+        "- Do NOT invent dialogue that isn't present in the source text.",
+        "- Return valid JSON matching the response schema.",
     ]
 
     if vision_mode:
         instructions.append(
-            "- MULTIMODAL VERIFICATION: A visual image of the manga panel/page is attached. "
-            "Use it to verify or correct the OCR text if words appear corrupted, truncated, or ambiguous."
+            "- MULTIMODAL VERIFICATION: A visual image of the manga page is attached. "
+            "Use it to verify the OCR text accuracy. If you can see text in the image that differs from the OCR, translate what you see in the image."
         )
 
     if request_scene_summary:
@@ -102,8 +106,6 @@ def build_translation_prompt(
         instructions.append(
             "- Keep `scene_summary_update` concise or null if no significant narrative transition occurred."
         )
-
-    instructions.append("- Return strictly valid JSON matching the requested response schema with no preamble.")
 
     instructions_text = "\n".join(instructions)
 

@@ -23,6 +23,20 @@ DIALOGUE_GRAMMAR_REGEX = re.compile(
     r"(?:[はがをにでのともかねよぞわぜ]|[だで]す|[だっ]た|ない|たい|てる|でる|から|けど|って|お前|おれ|私|僕|何|誰|どこ|いつ|どう|そう|これ|それ|あれ|ありがとう|助かった|待て|行く|来る|やる|見る|言う)"
 )
 
+# Matches text that consists strictly of punctuation and whitespace (no semantic dialogue)
+PUNCTUATION_ONLY_REGEX = re.compile(r"^[\s？！?!…。、．・〜～ー「」『』（）\(\)\.\,\!\?\:\;\-]+$")
+
+
+def is_punctuation_only(ocr_text: str) -> bool:
+    """Return True if the text consists ONLY of Japanese/English punctuation and whitespace.
+
+    Used to filter standalone '?', '!', etc. from being sent to translation LLMs
+    or stamped over original manga art.
+    """
+    if not ocr_text or not ocr_text.strip():
+        return True
+    return bool(PUNCTUATION_ONLY_REGEX.match(ocr_text.strip()))
+
 
 def is_predominantly_katakana(text: str, threshold: float = 0.60) -> bool:
     """Check if the non-punctuation characters in a text are predominantly Katakana.

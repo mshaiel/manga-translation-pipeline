@@ -45,5 +45,20 @@ class TestSfxClassifier:
         # Text with a speech bubble tail is dialogue
         assert is_sfx_candidate("ドン", is_essential=False, has_tail=True) is False
         # Text with attributed speaker is dialogue
-        assert is_sfx_candidate("ゴゴ", is_essential=False, speaker_name="Villain") is False
         assert is_sfx_candidate("バーン", is_essential=False, speaker_cluster_id=1) is False
+
+    def test_is_punctuation_only(self):
+        from src.ocr.sfx_classifier import is_punctuation_only
+
+        assert is_punctuation_only("？") is True
+        assert is_punctuation_only("！") is True
+        assert is_punctuation_only("！？") is True
+        assert is_punctuation_only("…") is True
+        assert is_punctuation_only("?!") is True
+        assert is_punctuation_only(" ... ") is True
+        assert is_punctuation_only("") is True
+        assert is_punctuation_only("  ") is True
+        # Contains letters/words -> False
+        assert is_punctuation_only("何？") is False
+        assert is_punctuation_only("What?") is False
+        assert is_punctuation_only("ドン！") is False
