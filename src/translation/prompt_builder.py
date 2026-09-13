@@ -81,18 +81,16 @@ def build_translation_prompt(
 
     # 3. Assemble Instructions
     instructions = [
-        "- Translate naturally, not literally. Manga dialogue should feel alive, idiomatic, and punchy.",
+        "- Translate naturally, not literally. Manga dialogue should feel alive and punchy.",
         "- Preserve each character's speech style, tone, and distinct personality.",
         "- For SFX (is_sfx=true), provide a short, dynamic English comic equivalent (e.g., 'BOOM!', 'THUD', 'RUMBLE').",
         "- Use the speaker attribution and rolling context to resolve pronouns — Japanese frequently drops grammatical subjects.",
-        "- CRITICAL COMPLETENESS: You MUST return a translation item for EVERY SINGLE id in the dialogue list. Do NOT skip, omit, or merge IDs.",
-        "- Manga is read Right-to-Left, Top-to-Bottom. Respect the established reading order and flow of conversation.",
     ]
 
     if vision_mode:
         instructions.append(
-            "- MULTIMODAL VERIFICATION: A visual image of the manga page is attached. "
-            "Inspect it carefully to cross-reference speech bubbles, verify character expressions, and correct any OCR errors or truncations."
+            "- MULTIMODAL VERIFICATION: A visual image of the manga panel/page is attached. "
+            "Use it to verify or correct the OCR text if words appear corrupted, truncated, or ambiguous."
         )
 
     if request_scene_summary:
@@ -105,7 +103,7 @@ def build_translation_prompt(
             "- Keep `scene_summary_update` concise or null if no significant narrative transition occurred."
         )
 
-    instructions.append("- Return strictly valid JSON matching the requested response schema with no markdown wrapping or preamble.")
+    instructions.append("- Return strictly valid JSON matching the requested response schema with no preamble.")
 
     instructions_text = "\n".join(instructions)
 

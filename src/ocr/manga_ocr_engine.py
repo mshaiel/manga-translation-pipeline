@@ -13,7 +13,6 @@ from typing import Any
 
 from PIL import Image
 
-from src.ocr.box_merger import merge_adjacent_text_boxes
 from src.ocr.sfx_classifier import is_sfx_candidate
 from src.translation.schemas import PageDetection, TextBox
 from src.utils.gpu_utils import clear_gpu_memory, get_device
@@ -134,14 +133,11 @@ class MangaOcrEngine:
         pil_img = load_pil_image(page_image)
         width, height = pil_img.size
 
-        # 1. Merge adjacent vertical text columns belonging to the same speech bubble
-        candidate_boxes = merge_adjacent_text_boxes(detection.text_boxes)
-
         updated_text_boxes: list[TextBox] = []
 
-        for tb in candidate_boxes:
-            # Crop text region using normalized coordinates with 10% total expansion (5% margin each side)
-            crop = crop_image(pil_img, tb.bbox.to_list(), normalized=True, expand_ratio=0.05)
+        for tb in detection.text_boxes:
+            # Crop text region using normalized coordinates
+            crop = crop_image(pil_img, tb.bbox.to_list(), normalized=True)
 
             # Perform OCR on the PIL crop
             if self.mock_mode or self.mocr is None:

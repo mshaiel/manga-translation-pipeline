@@ -311,17 +311,9 @@ class MangaTranslationPipeline:
                 logger.info("Loaded Stage 3 Translations from checkpoint.")
         else:
             logger.info("Executing Stage 3/4: Reading Order and LLM Translation...")
-            trans_cfg = self.config.get("translation", {})
-            vm_cfg = trans_cfg.get("vision_mode", True)
-            if isinstance(vm_cfg, dict):
-                enable_vision = vm_cfg.get("enabled_by_default", True)
-            else:
-                enable_vision = bool(vm_cfg)
-            preserve_magi = self.config.get("pipeline", {}).get("preserve_magi_order", False)
-
             for idx, det in enumerate(detections):
                 # 1. Establish Right-to-Left, Top-to-Bottom reading order
-                ordered_boxes = sort_page_dialogue(det, preserve_magi_order=preserve_magi)
+                ordered_boxes = sort_page_dialogue(det)
                 page_det = det.model_copy(update={"text_boxes": ordered_boxes})
                 ordered_detections.append(page_det)
 
@@ -344,7 +336,7 @@ class MangaTranslationPipeline:
                     text_boxes=trans_items,
                     context=self.context_manager.get_context(),
                     page_image_path=str(chapter_pages[idx]),
-                    vision_mode=enable_vision,
+                    vision_mode=False,
                 )
 
                 # 4. Dispatch Translation API call

@@ -10,8 +10,6 @@ import logging
 import textwrap
 from pathlib import Path
 
-import cv2
-import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from src.translation.schemas import PageDetection, TranslationResponse
@@ -180,98 +178,6 @@ class MangaTypesetter:
             text: Translated dialogue string.
             bbox_pixels: (px1, py1, px2, py2) coordinates.
         """
-    def inpaint_speech_bubble(
-        self,
-        image: Image.Image,
-        bbox_pixels: tuple[int, int, int, int],
-    ) -> tuple[int, int, int, int]:
-        """Inpaint the speech bubble white using OpenCV flood-fill to discover true bubble boundaries.
-
-        Stops at outer black ink outlines, ensuring the entire interior is cleaned white
-        without spilling onto background artwork. Falls back to padded rectangle if flood-fill leaks.
-
-        Returns:
-            (fit_x1, fit_y1, fit_x2, fit_y2): Usable interior boundaries for typesetting English text.
-        """
-        px1, py1, px2, py2 = bbox_pixels
-        bw = px2 - px1
-        bh = py2 - py1
-        img_w, img_h = image.size
-
-        fit_box = (px1, py1, px2, py2)
-
-        try:
-            img_np = np.array(image.convert("RGB"))
-            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-
-            # Find brightest pixel inside text box (representing bubble background paper, not ink)
-            crop_y1, crop_y2 = max(0, py1), min(img_h, py2)
-            crop_x1, crop_x2 = max(0, px1), min(img_w, px2)
-            crop_gray = gray[crop_y1:crop_y2, crop_x1:crop_x2]
-
-            if crop_gray.size > 0:
-                _, max_val, _, max_loc = cv2.minMaxLoc(crop_gray)
-                seed_x = crop_x1 + max_loc[0]
-                seed_y = crop_y1 + max_loc[1]
-            else:
-                seed_x = (px1 + px2) // 2
-                seed_y = (py1 + py2) // 2
-                max_val = 255
-
-            # If seed point is a light interior pixel (> 150), perform flood fill
-            if max_val > 150:
-                mask = np.zeros((img_h + 2, img_w + 2), dtype=np.uint8)
-                flags = 4 | (255 << 8) | cv2.FLOODFILL_MASK_ONLY
-                retval, _, mask, rect = cv2.floodFill(
-                    gray.copy(), mask, (seed_x, seed_y), 255, loDiff=30, upDiff=30, flags=flags
-                )
-
-                rx, ry, rw, rh = rect
-                page_area = img_w * img_h
-                text_area = max(1, bw * bh)
-
-                # Validate flood-fill: must cover the text area and not exceed 30% of entire page
-                if retval > 0 and (retval / page_area) < 0.30 and rw >= bw * 0.7 and rh >= bh * 0.7:
-                    bubble_mask = mask[1:-1, 1:-1] == 255
-                    fill_rgb = [self.inpaint_bg_color[0], self.inpaint_bg_color[1], self.inpaint_bg_color[2]]
-                    img_np[bubble_mask] = fill_rgb
-                    image.paste(Image.fromarray(img_np))
-
-                    fit_box = (
-                        max(0, rx + 4),
-                        max(0, ry + 4),
-                        min(img_w, rx + rw - 4),
-                        min(img_h, ry + rh - 4),
-                    )
-                    return fit_box
-
-        except Exception as err:
-            logger.debug("cv2 flood-fill inpaint fallback due to: %s", err)
-
-        # Fallback: Inpaint with comfortable rectangular padding
-        draw = ImageDraw.Draw(image)
-        pad_x = max(6, int(bw * 0.15))
-        pad_y = max(4, int(bh * 0.08))
-        rx1 = max(0, px1 - pad_x)
-        ry1 = max(0, py1 - pad_y)
-        rx2 = min(img_w, px2 + pad_x)
-        ry2 = min(img_h, py2 + pad_y)
-        draw.rectangle([rx1, ry1, rx2, ry2], fill=self.inpaint_bg_color)
-        return (rx1, ry1, rx2, ry2)
-
-    def render_dialogue(
-        self,
-        image: Image.Image,
-        text: str,
-        bbox_pixels: tuple[int, int, int, int],
-    ) -> None:
-        """Inpaint speech bubble with white and typeset natural, word-wrapped English dialogue.
-
-        Args:
-            image: PIL Image being modified in-place.
-            text: Translated dialogue string.
-            bbox_pixels: (px1, py1, px2, py2) coordinates.
-        """
         px1, py1, px2, py2 = bbox_pixels
         bw = px2 - px1
         bh = py2 - py1
@@ -279,27 +185,32 @@ class MangaTypesetter:
         if bw <= 0 or bh <= 0 or not text.strip():
             return
 
-        # 1. Clean speech bubble using OpenCV flood-fill or padded fallback
-        fit_x1, fit_y1, fit_x2, fit_y2 = self.inpaint_speech_bubble(image, bbox_pixels)
-        fit_w = fit_x2 - fit_x1
-        fit_h = fit_y2 - fit_y1
-
         draw = ImageDraw.Draw(image)
 
-        # 2. Fit and word-wrap translated text inside the true bubble region
-        font, lines, text_w, text_h = self.fit_text_to_box(text, fit_w, fit_h)
+        # 1. Inpaint bubble region with white (slight padding to erase black kana glyph edges cleanly)
+        pad = 2
+        inpaint_rect = [
+            max(0, px1 - pad),
+            max(0, py1 - pad),
+            min(image.width, px2 + pad),
+            min(image.height, py2 + pad),
+        ]
+        draw.rectangle(inpaint_rect, fill=self.inpaint_bg_color)
 
-        # 3. Center vertically inside the bubble region
+        # 2. Fit and word-wrap translated text
+        font, lines, text_w, text_h = self.fit_text_to_box(text, bw, bh)
+
+        # 3. Center vertically inside the bounding box
         spacing = max(2, int(getattr(font, "size", 14) * 0.2))
-        curr_y = max(fit_y1, fit_y1 + (fit_h - text_h) // 2)
+        curr_y = max(py1, py1 + (bh - text_h) // 2)
 
         for line in lines:
             line_bbox = draw.textbbox((0, 0), line, font=font)
             lw = line_bbox[2] - line_bbox[0]
             lh = line_bbox[3] - line_bbox[1]
 
-            # Center horizontally inside the bubble region
-            curr_x = max(fit_x1, fit_x1 + (fit_w - lw) // 2)
+            # Center horizontally
+            curr_x = max(px1, px1 + (bw - lw) // 2)
             draw.text((curr_x, curr_y), line, font=font, fill=self.dialogue_text_color)
             curr_y += lh + spacing
 
