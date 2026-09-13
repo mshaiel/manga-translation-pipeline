@@ -76,11 +76,29 @@ class MagiDetector:
                 from transformers.configuration_utils import PretrainedConfig
                 from transformers.models.auto.modeling_auto import AutoBackbone
                 from transformers.models.resnet.configuration_resnet import ResNetConfig
+                from transformers.models.resnet.modeling_resnet import ResNetBackbone
 
-                if hasattr(AutoBackbone, "_model_mapping") and ResNetConfig in AutoBackbone._model_mapping:
-                    AutoBackbone._model_mapping[PretrainedConfig] = AutoBackbone._model_mapping[ResNetConfig]
-            except Exception:
-                pass
+                # 1. Register PretrainedConfig in model mapping
+                if hasattr(AutoBackbone, "_model_mapping"):
+                    AutoBackbone._model_mapping[PretrainedConfig] = ResNetBackbone
+
+                # 2. Patch from_config directly to intercept PretrainedConfig
+                orig_from_config = AutoBackbone.from_config.__func__
+
+                @classmethod
+                def _patched_from_config(cls, config, **kwargs):
+                    if type(config) is PretrainedConfig or config.__class__.__name__ == "PretrainedConfig":
+                        resnet_cfg = ResNetConfig(
+                            num_channels=3,
+                            depths=[3, 4, 6, 3],
+                            hidden_sizes=[256, 512, 1024, 2048],
+                        )
+                        return ResNetBackbone(resnet_cfg)
+                    return orig_from_config(cls, config, **kwargs)
+
+                AutoBackbone.from_config = _patched_from_config
+            except Exception as patch_err:
+                logger.debug("AutoBackbone shim notice: %s", patch_err)
 
             self.model = AutoModel.from_pretrained(
                 self.model_id,
