@@ -45,7 +45,7 @@ reading_order:
 translation:
   primary_provider: "gemini"
   gemini:
-    model_name: "gemini-2.0-flash"
+    model_name: "gemini-2.5-flash"
     temperature: 0.2
     max_retries: 3
     retry_initial_delay_seconds: 1.0

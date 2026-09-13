@@ -118,7 +118,7 @@ class GeminiProvider(TranslationProvider):
 
         # Build candidate models list for automatic failover when high demand (503/429) occurs
         candidates = [model_name]
-        for fallback in ("gemini-2.0-flash", "gemini-1.5-flash"):
+        for fallback in ("gemini-2.5-flash", "gemini-3.6-flash", "gemini-2.5-pro"):
             if fallback not in candidates:
                 candidates.append(fallback)
         self.candidate_models = candidates
