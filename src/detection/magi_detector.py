@@ -84,7 +84,35 @@ class MagiDetector:
                 config.detection_model_config.backbone_config = resnet_backbone_cfg
                 config.detection_model_config.backbone = None
 
-            # 2. Patch load_backbone directly to intercept unconfigured Conditional DETR backbones
+            # 2. Patch AutoBackbone and _BaseAutoModelClass to intercept PreTrainedConfig / untyped backbone configs
+            try:
+                from transformers import AutoBackbone
+                from transformers.models.auto.auto_factory import _BaseAutoModelClass
+                from transformers.models.resnet.modeling_resnet import ResNetBackbone
+
+                orig_base_from_config = _BaseAutoModelClass.from_config.__func__
+
+                def _safe_base_from_config(cls, *args, **kwargs):
+                    cfg = args[0] if args else kwargs.get("config")
+                    if cfg is not None and (
+                        "PreTrainedConfig" in type(cfg).__name__
+                        or "PretrainedConfig" in type(cfg).__name__
+                        or type(cfg) not in getattr(cls, "_model_mapping", {})
+                    ):
+                        r_cfg = ResNetConfig(
+                            out_features=["stage2", "stage3", "stage4"],
+                        )
+                        cfg.backbone_config = r_cfg
+                        cfg.backbone = None
+                        return ResNetBackbone(r_cfg)
+                    return orig_base_from_config(cls, *args, **kwargs)
+
+                _BaseAutoModelClass.from_config = classmethod(_safe_base_from_config)
+                AutoBackbone.from_config = classmethod(_safe_base_from_config)
+            except Exception as patch_err:
+                logger.debug("AutoModelClass patch notice: %s", patch_err)
+
+            # 3. Patch load_backbone directly as an extra safety layer
             try:
                 import transformers.backbone_utils as bb_utils
                 orig_load_bb = bb_utils.load_backbone
@@ -107,7 +135,21 @@ class MagiDetector:
             except Exception as patch_err:
                 logger.debug("Backbone patch notice: %s", patch_err)
 
-            # 3. Load model with pre-configured ResNet backbone
+            # 4. Patch PreTrainedModel.__getattr__ for transformers 4.45+ custom code tied weights check
+            try:
+                from transformers.modeling_utils import PreTrainedModel
+                orig_getattr = PreTrainedModel.__getattr__
+
+                def _safe_getattr(self_model, name):
+                    if name == "all_tied_weights_keys":
+                        return {}
+                    return orig_getattr(self_model, name)
+
+                PreTrainedModel.__getattr__ = _safe_getattr
+            except Exception as patch_err:
+                logger.debug("PreTrainedModel patch notice: %s", patch_err)
+
+            # 5. Load model with pre-configured ResNet backbone
             self.model = AutoModel.from_pretrained(
                 self.model_id,
                 config=config,
