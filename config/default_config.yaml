@@ -51,7 +51,7 @@ translation:
     provider: "openai"
     model_name: "gpt-4o-mini"
   vision_mode:
-    enabled_by_default: false
+    enabled_by_default: true
     auto_trigger_on_low_confidence: true
     confidence_threshold: 0.5
 

@@ -158,15 +158,18 @@ def crop_image(
     image: Image.Image | np.ndarray,
     bbox: Sequence[int | float],
     normalized: bool = True,
+    expand_ratio: float = 0.0,
 ) -> Image.Image:
     """Crop a bounding box region from an image, returning a PIL Image.
 
     Handles both normalized coordinates (Magi output) and absolute pixel coordinates.
+    Optionally expands bounding box by expand_ratio to prevent slicing outer glyphs.
 
     Args:
         image: PIL Image or numpy array (H, W, C).
         bbox: 4 coordinates [x1, y1, x2, y2].
         normalized: Set to True if bbox coordinates are in [0, 1], False if pixels.
+        expand_ratio: Fraction of width and height to expand on each edge (e.g. 0.05 = 5% margin).
 
     Returns:
         Cropped PIL Image.
@@ -189,6 +192,16 @@ def crop_image(
             max(0, min(width, int(round(bbox[2])))),
             max(0, min(height, int(round(bbox[3])))),
         )
+
+    if expand_ratio > 0.0:
+        bw = px2 - px1
+        bh = py2 - py1
+        pad_w = int(bw * expand_ratio)
+        pad_h = int(bh * expand_ratio)
+        px1 = max(0, px1 - pad_w)
+        py1 = max(0, py1 - pad_h)
+        px2 = min(width, px2 + pad_w)
+        py2 = min(height, py2 + pad_h)
 
     # Ensure non-zero crop area
     if px2 <= px1:

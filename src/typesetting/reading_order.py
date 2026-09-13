@@ -31,10 +31,10 @@ def compute_intersection_area(b1: BoundingBox, b2: BoundingBox) -> float:
 def order_panels_manga(panels: list[PanelBox]) -> list[PanelBox]:
     """Sort manga panels in standard Right-to-Left, Top-to-Bottom reading order.
 
-    Algorithm:
-    1. Cluster panels into vertical columns based on horizontal (X) overlap.
-    2. Sort columns from Right to Left (highest X center first).
-    3. Sort panels within each column from Top to Bottom (lowest Y first).
+    Algorithm (Horizontal Tier / Row Clustering):
+    1. Cluster panels into horizontal rows (tiers) based on vertical (Y) overlap.
+    2. Sort tiers from Top to Bottom (lowest average Y first).
+    3. Sort panels within each tier from Right to Left (highest X2 first).
 
     Args:
         panels: Unsorted list of PanelBox objects.
@@ -49,48 +49,50 @@ def order_panels_manga(panels: list[PanelBox]) -> list[PanelBox]:
         single = panels[0].model_copy(update={"reading_order_index": 0})
         return [single]
 
-    # Partition panels into columns
-    columns: list[list[PanelBox]] = []
+    # Partition panels into horizontal rows (tiers)
+    rows: list[list[PanelBox]] = []
 
-    # Sort candidates initially by rightmost edge descending
-    sorted_by_x = sorted(panels, key=lambda p: (p.bbox.x2, p.bbox.x1), reverse=True)
+    # Sort candidates initially by top edge ascending
+    sorted_by_y = sorted(panels, key=lambda p: (p.bbox.y1, p.bbox.y2))
 
-    for panel in sorted_by_x:
-        matched_col = False
-        p_x_center = (panel.bbox.x1 + panel.bbox.x2) / 2.0
+    for panel in sorted_by_y:
+        matched_row = False
+        p_y_center = (panel.bbox.y1 + panel.bbox.y2) / 2.0
 
-        for col in columns:
-            # Check if panel horizontally overlaps with this column
-            col_x1 = min(p.bbox.x1 for p in col)
-            col_x2 = max(p.bbox.x2 for p in col)
-            col_width = col_x2 - col_x1
+        for row in rows:
+            # Check if panel vertically overlaps with this horizontal tier
+            row_y1 = min(p.bbox.y1 for p in row)
+            row_y2 = max(p.bbox.y2 for p in row)
+            row_height = row_y2 - row_y1
 
-            # Check overlap or proximity
-            overlap_x1 = max(panel.bbox.x1, col_x1)
-            overlap_x2 = min(panel.bbox.x2, col_x2)
-            overlap_w = max(0.0, overlap_x2 - overlap_x1)
+            overlap_y1 = max(panel.bbox.y1, row_y1)
+            overlap_y2 = min(panel.bbox.y2, row_y2)
+            overlap_h = max(0.0, overlap_y2 - overlap_y1)
 
-            # If there is meaningful horizontal overlap, assign to this column
-            if col_width > 0 and (overlap_w / min(panel.bbox.width, col_width) > 0.3 or abs(p_x_center - (col_x1 + col_x2) / 2.0) < 0.15):
-                col.append(panel)
-                matched_col = True
+            # If there is substantial vertical overlap, assign to this horizontal row
+            if row_height > 0 and (
+                overlap_h / min(panel.bbox.height, row_height) > 0.30
+                or abs(p_y_center - (row_y1 + row_y2) / 2.0) < 0.12
+            ):
+                row.append(panel)
+                matched_row = True
                 break
 
-        if not matched_col:
-            columns.append([panel])
+        if not matched_row:
+            rows.append([panel])
 
-    # Sort columns from Right to Left (highest average X first)
-    def col_rightness(col: list[PanelBox]) -> float:
-        return sum((p.bbox.x1 + p.bbox.x2) / 2.0 for p in col) / len(col)
+    # Sort tiers from Top to Bottom (lowest average Y first)
+    def row_topness(row: list[PanelBox]) -> float:
+        return sum((p.bbox.y1 + p.bbox.y2) / 2.0 for p in row) / len(row)
 
-    columns.sort(key=col_rightness, reverse=True)
+    rows.sort(key=row_topness)
 
-    # Sort panels within each column from Top to Bottom
+    # Sort panels within each tier from Right to Left (highest X2 first)
     ordered_panels: list[PanelBox] = []
     global_idx = 0
-    for col in columns:
-        col.sort(key=lambda p: p.bbox.y1)
-        for p in col:
+    for row in rows:
+        row.sort(key=lambda p: p.bbox.x2, reverse=True)
+        for p in row:
             ordered = p.model_copy(update={"reading_order_index": global_idx})
             ordered_panels.append(ordered)
             global_idx += 1
@@ -191,7 +193,10 @@ def order_text_boxes_within_panel(text_boxes: list[TextBox]) -> list[TextBox]:
     return ordered
 
 
-def sort_page_dialogue(page: PageDetection) -> list[TextBox]:
+def sort_page_dialogue(
+    page: PageDetection,
+    preserve_magi_order: bool = False,
+) -> list[TextBox]:
     """Establish reading order for all dialogue and SFX on a manga page.
 
     1. Orders panels Right-to-Left, Top-to-Bottom.
@@ -202,6 +207,7 @@ def sort_page_dialogue(page: PageDetection) -> list[TextBox]:
 
     Args:
         page: PageDetection containing panels and text boxes.
+        preserve_magi_order: If True, retains Magi v2's native graph-cut reading order.
 
     Returns:
         List of TextBoxes ordered by reading order.
@@ -209,9 +215,9 @@ def sort_page_dialogue(page: PageDetection) -> list[TextBox]:
     if not page.text_boxes:
         return []
 
-    # If no panels were detected, sort text boxes directly by page coordinates
-    if not page.panels:
-        ordered_direct = order_text_boxes_within_panel(page.text_boxes)
+    # If instructed to preserve Magi's native reading order (or no panels detected)
+    if preserve_magi_order or not page.panels:
+        ordered_direct = order_text_boxes_within_panel(page.text_boxes) if not preserve_magi_order else page.text_boxes
         return [
             tb.model_copy(update={"reading_order_index": i})
             for i, tb in enumerate(ordered_direct)

@@ -39,11 +39,11 @@ class TestReadingOrder:
         assert [p.id for p in ordered] == [0, 1]
 
     def test_shonen_page_layout_grid(self):
-        # 4 panels:
-        # Top-Right (0), Top-Left (1)
-        # Bottom-Right (2), Bottom-Left (3)
-        # Expected reading order: Top-Right (0) -> Bottom-Right (2) [Column 1]
-        #                      -> Top-Left (1) -> Bottom-Left (3) [Column 2]
+        # 4 panels forming 2 horizontal tiers (rows):
+        # Row 1: Top-Right (0), Top-Left (1)
+        # Row 2: Bottom-Right (2), Bottom-Left (3)
+        # Standard Manga reading order:
+        # Tier 1 (Top-Right -> Top-Left) -> Tier 2 (Bottom-Right -> Bottom-Left)
         p_tr = PanelBox(id=0, bbox=[0.55, 0.05, 0.95, 0.45])
         p_tl = PanelBox(id=1, bbox=[0.05, 0.05, 0.45, 0.45])
         p_br = PanelBox(id=2, bbox=[0.55, 0.55, 0.95, 0.95])
@@ -52,11 +52,7 @@ class TestReadingOrder:
         ordered = order_panels_manga([p_bl, p_tr, p_tl, p_br])
         ordered_ids = [p.id for p in ordered]
 
-        # In column-based manga reading:
-        # Right column panels come before Left column panels
-        assert ordered_ids.index(0) < ordered_ids.index(1)
-        assert ordered_ids.index(2) < ordered_ids.index(3)
-        assert ordered_ids.index(0) < ordered_ids.index(2)
+        assert ordered_ids == [0, 1, 2, 3]
 
     def test_text_boxes_within_panel_right_to_left(self):
         # Two bubbles inside one panel: Bubble A (right), Bubble B (left)
@@ -105,3 +101,13 @@ class TestReadingOrder:
         assert sorted_boxes[0].reading_order_index == 0
         assert sorted_boxes[1].id == 102
         assert sorted_boxes[1].reading_order_index == 1
+
+    def test_preserve_magi_order(self):
+        t1 = TextBox(id=1, bbox=[0.1, 0.1, 0.2, 0.3])
+        t2 = TextBox(id=2, bbox=[0.5, 0.5, 0.6, 0.7])
+        page = PageDetection(page_index=0, text_boxes=[t2, t1])
+
+        ordered = sort_page_dialogue(page, preserve_magi_order=True)
+        assert [t.id for t in ordered] == [2, 1]
+        assert ordered[0].reading_order_index == 0
+        assert ordered[1].reading_order_index == 1
