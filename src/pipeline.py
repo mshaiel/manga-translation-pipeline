@@ -156,7 +156,7 @@ class MangaTranslationPipeline:
         if primary == "gemini":
             gemini_cfg = trans_cfg.get("gemini", {})
             return GeminiProvider(
-                model_name=gemini_cfg.get("model_name", "gemini-2.5-flash"),
+                model_name=gemini_cfg.get("model_name", "gemini-2.0-flash"),
                 temperature=gemini_cfg.get("temperature", 0.2),
                 max_retries=gemini_cfg.get("max_retries", 3),
             )

@@ -116,6 +116,13 @@ class GeminiProvider(TranslationProvider):
         self.backoff_factor = backoff_factor
         self.api_key = resolve_gemini_api_key(api_key)
 
+        # Build candidate models list for automatic failover when high demand (503/429) occurs
+        candidates = [model_name]
+        for fallback in ("gemini-2.0-flash", "gemini-1.5-flash"):
+            if fallback not in candidates:
+                candidates.append(fallback)
+        self.candidate_models = candidates
+
         self._genai_client: Any = None
         self._use_new_sdk: bool = False
 
@@ -227,13 +234,20 @@ class GeminiProvider(TranslationProvider):
             except Exception as e:
                 logger.warning("Could not load vision crop from %s: %s", request.page_image_path, e)
 
-        # Execution loop with exponential backoff
+        # Execution loop with exponential backoff and model failover
         last_exception: Exception | None = None
         delay = self.initial_retry_delay
+        candidate_models = list(self.candidate_models)
 
         for attempt in range(self.max_retries + 1):
+            current_model = candidate_models[min(attempt, len(candidate_models) - 1)]
             try:
-                logger.debug("Dispatching Gemini translation request (attempt %d/%d)...", attempt + 1, self.max_retries + 1)
+                logger.info(
+                    "Dispatching Gemini translation request (attempt %d/%d) using model '%s'...",
+                    attempt + 1,
+                    self.max_retries + 1,
+                    current_model,
+                )
 
                 if self._use_new_sdk:
                     # New google.genai SDK
@@ -244,7 +258,7 @@ class GeminiProvider(TranslationProvider):
                         "temperature": self.temperature,
                     }
                     response = client.models.generate_content(
-                        model=self._model_name,
+                        model=current_model,
                         contents=content_parts,
                         config=config_dict,
                     )
@@ -269,7 +283,7 @@ class GeminiProvider(TranslationProvider):
                         gen_config = genai.GenerationConfig(**gen_config_kwargs)
 
                     model = genai.GenerativeModel(
-                        model_name=self._model_name,
+                        model_name=current_model,
                         generation_config=gen_config,
                     )
                     response = model.generate_content(content_parts)
@@ -282,9 +296,16 @@ class GeminiProvider(TranslationProvider):
 
             except Exception as err:
                 last_exception = err
-                logger.warning("Gemini API call failed on attempt %d: %s", attempt + 1, err)
+                logger.warning("Gemini API call failed on attempt %d (%s): %s", attempt + 1, current_model, err)
 
                 if attempt < self.max_retries:
+                    next_model = candidate_models[min(attempt + 1, len(candidate_models) - 1)]
+                    if next_model != current_model:
+                        logger.warning(
+                            "Model '%s' failed. Automatically failing over to '%s' on next attempt.",
+                            current_model,
+                            next_model,
+                        )
                     logger.info("Retrying in %.2f seconds (exponential backoff)...", delay)
                     time.sleep(delay)
                     delay *= self.backoff_factor
