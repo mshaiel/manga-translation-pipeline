@@ -63,9 +63,9 @@ class MangaOcrEngine:
         try:
             from manga_ocr import MangaOcr
 
-            # MangaOcr automatically utilizes GPU if available or accepts pretrained path
-            self.mocr = MangaOcr(pretrained_model_name_or_path=self.model_id)
-            logger.info("manga-ocr loaded successfully.")
+            force_cpu = (self.device == "cpu")
+            self.mocr = MangaOcr(pretrained_model_name_or_path=self.model_id, force_cpu=force_cpu)
+            logger.info("manga-ocr loaded successfully on device '%s'.", self.device)
         except Exception as err:
             logger.error("Failed to load manga-ocr: %s", err)
             raise RuntimeError(
@@ -127,6 +127,9 @@ class MangaOcrEngine:
         Returns:
             New PageDetection with updated TextBox objects (populated ocr_text, is_sfx, confidences).
         """
+        if not self.mock_mode and self.mocr is None:
+            self.load_model()
+
         pil_img = load_pil_image(page_image)
         width, height = pil_img.size
 
@@ -142,15 +145,28 @@ class MangaOcrEngine:
                 confidence = 0.95 if tb.is_essential else 0.85
             else:
                 ocr_text = self.ocr_crop(crop)
-                # Heuristic confidence score: short non-empty text has slightly higher variance
                 confidence = 0.95 if len(ocr_text.strip()) > 3 else 0.80
 
-            # Evaluate SFX classification combining Magi signal + linguistic heuristics
+            # Evaluate SFX classification combining Magi signal + linguistic heuristics + tail cues
             sfx_flag = is_sfx_candidate(
                 ocr_text=ocr_text,
                 is_essential=tb.is_essential,
                 ocr_confidence=confidence,
                 confidence_threshold=self.confidence_threshold,
+                has_tail=getattr(tb, "has_tail", False),
+                speaker_name=tb.speaker_name,
+                speaker_cluster_id=tb.speaker_cluster_id,
+            )
+
+            logger.info(
+                "  [OCR Page %d Box %d] text='%s' | SFX=%s (essential=%s, tail=%s, speaker=%s)",
+                detection.page_index + 1,
+                tb.id,
+                ocr_text,
+                sfx_flag,
+                tb.is_essential,
+                getattr(tb, "has_tail", False),
+                tb.speaker_name or (f"Cluster_{tb.speaker_cluster_id}" if tb.speaker_cluster_id is not None else None),
             )
 
             updated_box = tb.model_copy(
@@ -190,6 +206,9 @@ class MangaOcrEngine:
             raise ValueError(
                 f"Mismatch: got {len(chapter_pages)} pages but {len(detections)} detection records."
             )
+
+        if not self.mock_mode and self.mocr is None:
+            self.load_model()
 
         iterator = range(len(chapter_pages))
         if use_tqdm:

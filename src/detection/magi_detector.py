@@ -259,12 +259,17 @@ class MagiDetector:
                     )
                 )
 
-            # 3. Parse Associations: mapping text_idx -> char_idx
+            # 3. Parse Associations: mapping text_idx -> char_idx and text_idx -> tail_idx
             raw_associations = page_dict.get("text_character_associations", [])
             text_to_char_map: dict[int, int] = {}
             for assoc in raw_associations:
                 if len(assoc) == 2:
                     text_to_char_map[int(assoc[0])] = int(assoc[1])
+
+            raw_tail_assocs = page_dict.get("text_tail_associations", [])
+            text_ids_with_tails: set[int] = {
+                int(a[0]) for a in raw_tail_assocs if len(a) == 2
+            }
 
             # 4. Parse Text Boxes (normalized to [0, 1])
             raw_texts = page_dict.get("texts", [])
@@ -274,6 +279,7 @@ class MagiDetector:
             for i, t_box in enumerate(raw_texts):
                 is_ess = is_essential_flags[i] if i < len(is_essential_flags) else True
                 char_idx = text_to_char_map.get(i)
+                has_bubble_tail = i in text_ids_with_tails
 
                 spk_name: str | None = None
                 spk_cluster: int | None = None
@@ -281,9 +287,12 @@ class MagiDetector:
 
                 if char_idx is not None and 0 <= char_idx < len(characters):
                     target_char = characters[char_idx]
-                    spk_name = target_char.name
+                    spk_name = target_char.name if (target_char.name and target_char.name != "Other") else None
                     spk_cluster = target_char.cluster_id
                     spk_conf = 0.95
+
+                # A text box with a speech bubble tail or character association is dialogue
+                is_sfx_initial = not bool(is_ess) and not has_bubble_tail and (spk_name is None and spk_cluster is None)
 
                 text_boxes.append(
                     TextBox(
@@ -291,7 +300,8 @@ class MagiDetector:
                         bbox=MagiDetector._normalize_box(t_box, w, h),
                         ocr_text="",
                         is_essential=bool(is_ess),
-                        is_sfx=not bool(is_ess),
+                        is_sfx=bool(is_sfx_initial),
+                        has_tail=has_bubble_tail,
                         speaker_name=spk_name,
                         speaker_cluster_id=spk_cluster,
                         speaker_confidence=spk_conf,

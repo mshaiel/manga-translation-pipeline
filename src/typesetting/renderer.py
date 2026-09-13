@@ -62,13 +62,38 @@ class MangaTypesetter:
             logger.warning("Configured font not found at '%s'. Falling back to default PIL font.", self.font_path)
 
     def _load_font(self, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-        """Load the font at specified pixel size, falling back to PIL default if missing."""
-        if self.font_path.exists():
+        """Load the font at specified pixel size, falling back to system fonts or PIL default if missing."""
+        font_p = self.font_path
+        if not font_p.is_absolute() and not font_p.exists():
+            repo_root = Path(__file__).resolve().parent.parent.parent
+            candidate = repo_root / font_p
+            if candidate.exists():
+                font_p = candidate
+
+        if font_p.exists():
             try:
-                return ImageFont.truetype(str(self.font_path), size=size)
+                return ImageFont.truetype(str(font_p), size=size)
             except Exception as err:
-                logger.warning("Failed to load truetype font '%s': %s", self.font_path, err)
-        return ImageFont.load_default()
+                logger.warning("Failed to load truetype font '%s': %s", font_p, err)
+
+        # System Truetype fallback (covers Ubuntu/Colab and Windows)
+        system_candidates = [
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+        ]
+        for sys_f in system_candidates:
+            if Path(sys_f).exists():
+                try:
+                    return ImageFont.truetype(sys_f, size=size)
+                except Exception:
+                    pass
+
+        try:
+            return ImageFont.load_default(size=size)  # Pillow >= 10.1
+        except TypeError:
+            return ImageFont.load_default()
 
     def fit_text_to_box(
         self,
@@ -162,15 +187,22 @@ class MangaTypesetter:
 
         draw = ImageDraw.Draw(image)
 
-        # 1. Inpaint bubble region with white
-        draw.rectangle([px1, py1, px2, py2], fill=self.inpaint_bg_color)
+        # 1. Inpaint bubble region with white (slight padding to erase black kana glyph edges cleanly)
+        pad = 2
+        inpaint_rect = [
+            max(0, px1 - pad),
+            max(0, py1 - pad),
+            min(image.width, px2 + pad),
+            min(image.height, py2 + pad),
+        ]
+        draw.rectangle(inpaint_rect, fill=self.inpaint_bg_color)
 
         # 2. Fit and word-wrap translated text
         font, lines, text_w, text_h = self.fit_text_to_box(text, bw, bh)
 
         # 3. Center vertically inside the bounding box
         spacing = max(2, int(getattr(font, "size", 14) * 0.2))
-        curr_y = py1 + (bh - text_h) // 2
+        curr_y = max(py1, py1 + (bh - text_h) // 2)
 
         for line in lines:
             line_bbox = draw.textbbox((0, 0), line, font=font)
@@ -178,7 +210,7 @@ class MangaTypesetter:
             lh = line_bbox[3] - line_bbox[1]
 
             # Center horizontally
-            curr_x = px1 + (bw - lw) // 2
+            curr_x = max(px1, px1 + (bw - lw) // 2)
             draw.text((curr_x, curr_y), line, font=font, fill=self.dialogue_text_color)
             curr_y += lh + spacing
 
@@ -268,6 +300,7 @@ class MangaTypesetter:
         for tb in detection.text_boxes:
             translated_en = trans_map.get(tb.id, "")
             if not translated_en.strip():
+                logger.warning("No translation found for text box %d, skipping.", tb.id)
                 continue
 
             # Convert normalized bounding box to pixel coordinates
@@ -279,10 +312,10 @@ class MangaTypesetter:
             )
 
             if tb.is_sfx:
-                # Viz Media style SFX offset badge
+                logger.info("  Typeset SFX Box %d: '%s' -> '%s'", tb.id, tb.ocr_text, translated_en)
                 self.render_sfx_subtitle(output_image, translated_en, (px1, py1, px2, py2))
             else:
-                # White inpaint + dynamic centered text fit
+                logger.info("  Typeset Dialogue Box %d: '%s' -> '%s'", tb.id, tb.ocr_text, translated_en)
                 self.render_dialogue(output_image, translated_en, (px1, py1, px2, py2))
 
         return output_image

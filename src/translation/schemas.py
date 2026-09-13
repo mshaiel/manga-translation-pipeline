@@ -99,6 +99,7 @@ class TextBox(BaseModel):
     ocr_text: str = Field(default="", description="Recognized Japanese text from manga-ocr")
     is_essential: bool = Field(default=True, description="True for dialogue/narration; False for SFX from Magi")
     is_sfx: bool = Field(default=False, description="True if routed to SFX rendering style")
+    has_tail: bool = Field(default=False, description="True if text box has an associated speech bubble tail")
     speaker_name: str | None = Field(default=None, description="Attributed character name or 'narration'")
     speaker_cluster_id: int | None = Field(default=None, description="Magi cluster ID if name unknown")
     speaker_confidence: float = Field(default=1.0, description="Confidence of speaker attribution in [0.0, 1.0]")

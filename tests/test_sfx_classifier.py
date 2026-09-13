@@ -14,7 +14,7 @@ class TestSfxClassifier:
         assert is_predominantly_katakana("ありがとう") is False
 
     def test_magi_non_essential_signal(self):
-        # Even if text has kanji, if Magi says is_essential=False, it's SFX
+        # Non-essential text without Japanese sentence grammar is routed to SFX
         assert is_sfx_candidate("爆発", is_essential=False) is True
         assert is_sfx_candidate("ドン", is_essential=False) is True
 
@@ -32,3 +32,18 @@ class TestSfxClassifier:
     def test_low_confidence_katakana(self):
         # Low confidence Katakana triggers SFX candidate
         assert is_sfx_candidate("パチパチパチ", is_essential=True, ocr_confidence=0.3) is True
+
+    def test_dialogue_overrides_magi_non_essential(self):
+        # Crucial bug fix: Japanese dialogue speech bubbles misclassified by Magi as non-essential
+        # must NOT be routed to SFX!
+        assert is_sfx_candidate("おれは海賊王になる！", is_essential=False) is False
+        assert is_sfx_candidate("お前は誰だ？", is_essential=False) is False
+        assert is_sfx_candidate("ありがとう、助かったよ。", is_essential=False) is False
+        assert is_sfx_candidate("待て！そこから先へは行かせない！", is_essential=False) is False
+
+    def test_bubble_tail_and_speaker_override(self):
+        # Text with a speech bubble tail is dialogue
+        assert is_sfx_candidate("ドン", is_essential=False, has_tail=True) is False
+        # Text with attributed speaker is dialogue
+        assert is_sfx_candidate("ゴゴ", is_essential=False, speaker_name="Villain") is False
+        assert is_sfx_candidate("バーン", is_essential=False, speaker_cluster_id=1) is False

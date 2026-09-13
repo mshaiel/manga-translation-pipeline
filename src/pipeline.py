@@ -276,6 +276,8 @@ class MangaTranslationPipeline:
 
         if not stage2_cp:
             with managed_gpu_memory("Stage 2: Manga OCR"):
+                if not self.ocr_engine.mock_mode:
+                    self.ocr_engine.load_model()
                 detections = self.ocr_engine.process_chapter(
                     chapter_pages=chapter_pages,
                     detections=detections,
