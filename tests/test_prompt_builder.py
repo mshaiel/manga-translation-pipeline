@@ -36,6 +36,8 @@ class TestPromptBuilder:
         assert "THIS PAGE'S DIALOGUE (in reading order):" in prompt
         assert "行くぞ！" in prompt
         assert "Luffy" in prompt
+        assert "STRICT ENGLISH ONLY" in prompt
+        assert "UNTRANSLATABLE / SILENCE" in prompt
         assert "MULTIMODAL VERIFICATION" not in prompt
 
     def test_build_translation_prompt_vision_mode(self):

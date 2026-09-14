@@ -337,7 +337,8 @@ class MangaTranslationPipeline:
                 self.context_manager.register_page_characters(idx, page_det)
 
                 # 3. Post-OCR bubble grouping: cluster adjacent vertical columns into unified bubble groups
-                bubble_groups = group_same_bubble_texts(ordered_boxes, det.text_character_associations)
+                group_cfg = bool(self.config.get("reading_order", {}).get("group_bubbles", False))
+                bubble_groups = group_same_bubble_texts(ordered_boxes, det.text_character_associations, enabled=group_cfg)
                 all_bubble_groups.append(bubble_groups)
 
                 # 4. Assemble Translation Request (filtering silence and standalone punctuation)
@@ -457,10 +458,11 @@ class MangaTranslationPipeline:
 
         for idx, page_path in enumerate(chapter_pages):
             det = ordered_detections[idx]
+            group_cfg = bool(self.config.get("reading_order", {}).get("group_bubbles", False))
             b_groups = (
                 all_bubble_groups[idx]
                 if idx < len(all_bubble_groups)
-                else group_same_bubble_texts(det.text_boxes, det.text_character_associations)
+                else group_same_bubble_texts(det.text_boxes, det.text_character_associations, enabled=group_cfg)
             )
             typeset_img = self.typesetter.typeset_page(
                 page_image=page_path,

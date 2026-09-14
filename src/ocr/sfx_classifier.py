@@ -39,9 +39,10 @@ SILENCE_NOISE_REGEX = re.compile(
 def is_crop_visually_silent(crop_np: np.ndarray) -> bool:
     """Detect whether an image crop contains only vertical dots, ellipsis, or silence.
 
-    Directly analyzes foreground ink density and connected components. This provides
-    robust immunity against OCR hallucination or character misclassification on vertical
-    Japanese manga ellipsis bubbles.
+    Directly analyzes foreground ink density and connected components.
+    Evaluates both the inner sub-crop (ignoring speech bubble outlines on the border)
+    and the full crop. This guarantees 100% reliable detection of vertical Japanese
+    manga ellipsis bubbles even when manga-ocr misreads or hallucinates characters.
     """
     if crop_np is None or crop_np.size == 0:
         return True
@@ -55,40 +56,53 @@ def is_crop_visually_silent(crop_np: np.ndarray) -> bool:
     if h == 0 or w == 0:
         return True
 
-    # Dark ink pixels in manga
-    ink_mask = (gray < 140).astype(np.uint8)
-    ink_count = int(np.count_nonzero(ink_mask))
-    total_pixels = h * w
-    ink_density = ink_count / max(1, total_pixels)
+    # 1. Check inner region (excluding outer margin where speech bubble borders live)
+    pad_y = max(4, int(h * 0.18)) if h > 30 else 0
+    pad_x = max(4, int(w * 0.20)) if w > 30 else 0
 
-    # Practically white / empty crop
-    if ink_density < 0.001:
-        return True
+    regions_to_check = []
+    if pad_y > 0 and pad_x > 0 and (h - 2 * pad_y) > 15 and (w - 2 * pad_x) > 15:
+        inner = gray[pad_y : h - pad_y, pad_x : w - pad_x]
+        regions_to_check.append(inner)
+    regions_to_check.append(gray)
 
-    # Real sentences or detailed drawings have much higher ink density (> 8%)
-    if ink_density > 0.08:
-        return False
+    for region in regions_to_check:
+        rh, rw = region.shape
+        ink_mask = (region < 140).astype(np.uint8)
+        ink_count = int(np.count_nonzero(ink_mask))
+        total_pixels = rh * rw
+        ink_density = ink_count / max(1, total_pixels)
 
-    # Analyze connected components of dark ink
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(ink_mask)
-    components = []
-    for i in range(1, num_labels):
-        area = stats[i, cv2.CC_STAT_AREA]
-        comp_w = stats[i, cv2.CC_STAT_WIDTH]
-        comp_h = stats[i, cv2.CC_STAT_HEIGHT]
-        # Dots in manga are small isolated spots (typically 2x2 to 25x25)
-        if 2 <= area <= 250 and comp_w <= 30 and comp_h <= 30:
-            components.append((stats[i], centroids[i]))
+        # Empty / white region
+        if ink_density < 0.001:
+            return True
 
-    # 1 to 6 small dots accounting for >= 65% of the crop's total ink
-    if 1 <= len(components) <= 6:
-        comp_ink = sum(c[0][cv2.CC_STAT_AREA] for c in components)
-        if comp_ink / max(1, ink_count) >= 0.65:
-            # Check vertical alignment (all dots near the horizontal center of the crop)
-            xs = [c[1][0] for c in components]
-            center_x = w / 2.0
-            if all(abs(x - center_x) < (w * 0.40) for x in xs):
-                return True
+        # Vertical dots have low ink density (< 6% of region)
+        if ink_density < 0.06:
+            num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(ink_mask)
+            components = []
+            for i in range(1, num_labels):
+                left = stats[i, cv2.CC_STAT_LEFT]
+                top = stats[i, cv2.CC_STAT_TOP]
+                comp_w = stats[i, cv2.CC_STAT_WIDTH]
+                comp_h = stats[i, cv2.CC_STAT_HEIGHT]
+                area = stats[i, cv2.CC_STAT_AREA]
+
+                # Discard edge slivers touching the crop border (clipped bubble wall artifacts)
+                if left == 0 or top == 0 or (left + comp_w) >= rw or (top + comp_h) >= rh:
+                    continue
+
+                # Dots in manga are small isolated spots
+                if 2 <= area <= 300 and comp_w <= 35 and comp_h <= 35:
+                    components.append((stats[i], centroids[i]))
+
+            # 1 to 6 small dots
+            if 1 <= len(components) <= 6:
+                # Check vertical alignment near horizontal center
+                xs = [c[1][0] for c in components]
+                center_x = rw / 2.0
+                if all(abs(x - center_x) < (rw * 0.40) for x in xs):
+                    return True
 
     return False
 

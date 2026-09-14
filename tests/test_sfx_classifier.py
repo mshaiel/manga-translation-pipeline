@@ -117,4 +117,12 @@ class TestSfxClassifier:
             cv2.line(crop_text, (10, y), (30, y), 0, 2)
         assert is_crop_visually_silent(crop_text) is False
 
+        # 4. Silence bubble with black speech bubble outline on the outer margin
+        crop_bubble = np.ones((120, 50), dtype=np.uint8) * 255
+        cv2.ellipse(crop_bubble, (25, 60), (23, 58), 0, 0, 360, 0, 3)
+        cv2.circle(crop_bubble, (25, 35), 2, 0, -1)
+        cv2.circle(crop_bubble, (25, 60), 2, 0, -1)
+        cv2.circle(crop_bubble, (25, 85), 2, 0, -1)
+        assert is_crop_visually_silent(crop_bubble) is True
+
 

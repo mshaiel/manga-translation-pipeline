@@ -125,7 +125,7 @@ class TestTranslationProviders:
         assert res.translations[0].id == 1
         assert res.translations[0].english == "Pirate King"
         assert res.translations[1].id == 2
-        assert res.translations[1].english == "ドーン"
+        assert res.translations[1].english == ""
         assert res.scene_summary_update == "Luffy arrives."
         assert res.confidence == 0.98
 

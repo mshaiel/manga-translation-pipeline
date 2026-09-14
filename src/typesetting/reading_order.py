@@ -363,19 +363,27 @@ def _should_group_boxes(
 def group_same_bubble_texts(
     text_boxes: list[TextBox],
     text_character_associations: list[tuple[int, int]] | None = None,
+    enabled: bool = False,
 ) -> dict[int, list[TextBox]]:
     """Group adjacent text boxes forming a single multi-column speech bubble after OCR.
+
+    When enabled=False (default), treats each TextBox as an independent speech bubble,
+    ensuring each bubble is separately translated and typeset without cross-bubble merging.
 
     Args:
         text_boxes: Sequence of detected TextBoxes on a page with ocr_text populated.
         text_character_associations: Optional list of (text_box_id, character_id) associations.
+        enabled: If False, keeps all speech bubbles separate and unmerged.
 
     Returns:
-        Dict mapping group_id (lowest text box ID in the group) to the list of TextBoxes
-        in that group, sorted Right-to-Left (highest bbox.x2 first).
+        Dict mapping group_id to the list of TextBoxes in that group.
     """
     if not text_boxes:
         return {}
+
+    # Default: each speech bubble is translated and lettered independently
+    if not enabled:
+        return {tb.id: [tb] for tb in text_boxes}
 
     n = len(text_boxes)
     if n == 1:

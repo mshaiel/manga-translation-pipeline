@@ -197,7 +197,7 @@ class GeminiProvider(TranslationProvider):
                 parsed_response.translations.append(
                     TranslationItem(
                         id=mid,
-                        english=matching_tb.japanese if matching_tb else "[Translation unavailable]",
+                        english="",
                         translator_note="Omitted in initial LLM response",
                     )
                 )

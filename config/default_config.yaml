@@ -40,6 +40,7 @@ context:
 # Reading Order
 reading_order:
   preserve_magi_order: true
+  group_bubbles: false
 
 # Stage 5: Translation LLM
 translation:

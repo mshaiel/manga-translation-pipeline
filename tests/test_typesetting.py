@@ -294,4 +294,58 @@ class TestMangaTypesetter:
         # Silence box center (360, 220) must NOT be inpainted white! Remains original gray (180, 180, 180)
         assert np.all(out_np[360, 220] == [180, 180, 180])
 
+    def test_typeset_page_rejects_japanese_characters(self):
+        typesetter = MangaTypesetter()
+        img = Image.new("RGB", (400, 600), color=(180, 180, 180))
+
+        tb = TextBox(id=1, bbox=[0.2, 0.2, 0.4, 0.4], ocr_text="こんにちは", is_essential=True)
+        detection = PageDetection(
+            page_index=0,
+            image_width=400,
+            image_height=600,
+            text_boxes=[tb],
+        )
+
+        # Translation contains Japanese characters: must be rejected!
+        translation = TranslationResponse(
+            translations=[
+                TranslationItem(id=1, english="はい"),
+            ],
+            confidence=1.0,
+        )
+
+        out = typesetter.typeset_page(img, detection, translation)
+        out_np = np.array(out)
+        # The bubble must not be typeset with Japanese text or modified
+        assert np.all(out_np[180, 120] == [180, 180, 180])
+
+    def test_segment_bubble_mask_guarantees_base_coverage(self):
+        typesetter = MangaTypesetter()
+        img_gray = np.ones((300, 300), dtype=np.uint8) * 255
+        # Text box at (100, 100, 150, 150)
+        mask, (rx, ry, rw, rh) = typesetter.segment_bubble_mask(img_gray, [(100, 100, 150, 150)])
+
+        # Base mask guarantees [ux1 - 8, uy1 - 8, ux2 + 8, uy2 + 8] is covered
+        assert mask[100, 100] == 255
+        assert mask[95, 95] == 255
+        assert mask[155, 155] == 255
+        assert rw >= 50
+        assert rh >= 50
+
+    def test_resolve_non_overlapping_rects_safety_buffer(self):
+        typesetter = MangaTypesetter()
+        # Two rectangles horizontally overlapping between x=90 and x=110
+        rects = {1: (50, 50, 60, 50), 2: (90, 50, 60, 50)}
+        resolved = typesetter.resolve_non_overlapping_rects(rects)
+
+        r1_x, r1_y, r1_w, r1_h = resolved[1]
+        r2_x, r2_y, r2_w, r2_h = resolved[2]
+
+        # Right edge of r1 and left edge of r2 should have safety gap >= 8px
+        r1_right = r1_x + r1_w
+        r2_left = r2_x
+        assert r2_left >= r1_right + 8  # 8px buffer applied
+
+
+
 

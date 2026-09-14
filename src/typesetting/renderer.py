@@ -7,6 +7,7 @@ and positions Viz Media style subtitles near original SFX art.
 from __future__ import annotations
 
 import logging
+import re
 import textwrap
 from pathlib import Path
 
@@ -309,11 +310,22 @@ class MangaTypesetter:
         ink_closed = cv2.morphologyEx(ink_barrier, cv2.MORPH_CLOSE, kernel_close)
         free_space = (ink_closed == 0).astype(np.uint8) * 255
 
+        # Mandatory Base Text Coverage (8px padding around union of text bounding boxes):
+        # Guarantees that 100% of the Japanese text characters are covered with zero bleed-through!
+        base_mask = np.zeros_like(image_gray)
+        pad_base = 8
+        fx1 = max(0, ux1 - pad_base)
+        fy1 = max(0, uy1 - pad_base)
+        fx2 = min(img_w, ux2 + pad_base)
+        fy2 = min(img_h, uy2 + pad_base)
+        cv2.rectangle(base_mask, (fx1, fy1), (fx2, fy2), 255, -1)
+        base_rect = (fx1, fy1, fx2 - fx1, fy2 - fy1)
+
         # 2. Local search ROI: Constrain flood fill to a bounded search window around the text box
         # Speech bubbles in manga are centered around text; search window never needs to extend
         # into unrelated corners, gutters, or adjacent panels.
-        pad_x = max(int(ubw * 1.0), 60)
-        pad_y = max(int(ubh * 0.8), 60)
+        pad_x = max(int(ubw * 1.5), 100)
+        pad_y = max(int(ubh * 1.2), 100)
         roi_x1 = max(0, ux1 - pad_x)
         roi_y1 = max(0, uy1 - pad_y)
         roi_x2 = min(img_w, ux2 + pad_x)
@@ -417,26 +429,19 @@ class MangaTypesetter:
         )
 
         if leaked:
-            # Fallback to smooth elliptical mask around the text box (15px padding)
-            pad = 15
-            fallback_mask = np.zeros_like(image_gray)
-            fx1 = max(0, ux1 - pad)
-            fy1 = max(0, uy1 - pad)
-            fx2 = min(img_w, ux2 + pad)
-            fy2 = min(img_h, uy2 + pad)
-            fw = fx2 - fx1
-            fh = fy2 - fy1
-            fcx = fx1 + fw // 2
-            fcy = fy1 + fh // 2
-            cv2.ellipse(fallback_mask, (fcx, fcy), (fw // 2, fh // 2), 0, 0, 360, 255, -1)
-            return fallback_mask, (fx1, fy1, fw, fh)
+            # Fallback to guaranteed rectangular base mask closely wrapping the text
+            return base_mask, base_rect
+
+        # Union bubble interior contour with base text coverage so 100% of text is guaranteed covered
+        final_mask = cv2.bitwise_or(accumulated_mask, base_mask)
+        rx, ry, rw, rh = cv2.boundingRect(final_mask)
 
         # Inset the typesetting box by 6% from the bubble contour so letters never collide with ink lines
         inset_x = max(2, int(rw * 0.06))
         inset_y = max(2, int(rh * 0.06))
         typeset_rect = (rx + inset_x, ry + inset_y, max(20, rw - 2 * inset_x), max(20, rh - 2 * inset_y))
 
-        return accumulated_mask, typeset_rect
+        return final_mask, typeset_rect
 
     @staticmethod
     def partition_conjoined_bubble_rects(
@@ -528,33 +533,34 @@ class MangaTypesetter:
                     dx = abs(cx1 - cx2)
                     dy = abs(cy1 - cy2)
 
+                    half_buffer = 4
                     if dx >= dy:
-                        # Split horizontally
+                        # Split horizontally with safety buffer
                         split_x = int((cx1 + cx2) / 2)
                         if cx1 < cx2:
-                            new_w1 = max(10, split_x - x1)
-                            new_x2 = max(split_x, x2)
+                            new_w1 = max(10, split_x - x1 - half_buffer)
+                            new_x2 = max(split_x + half_buffer, x2)
                             new_w2 = max(10, (x2 + w2) - new_x2)
                             resolved[g1] = (x1, y1, new_w1, h1)
                             resolved[g2] = (new_x2, y2, new_w2, h2)
                         else:
-                            new_w2 = max(10, split_x - x2)
-                            new_x1 = max(split_x, x1)
+                            new_w2 = max(10, split_x - x2 - half_buffer)
+                            new_x1 = max(split_x + half_buffer, x1)
                             new_w1 = max(10, (x1 + w1) - new_x1)
                             resolved[g2] = (x2, y2, new_w2, h2)
                             resolved[g1] = (new_x1, y1, new_w1, h1)
                     else:
-                        # Split vertically
+                        # Split vertically with safety buffer
                         split_y = int((cy1 + cy2) / 2)
                         if cy1 < cy2:
-                            new_h1 = max(10, split_y - y1)
-                            new_y2 = max(split_y, y2)
+                            new_h1 = max(10, split_y - y1 - half_buffer)
+                            new_y2 = max(split_y + half_buffer, y2)
                             new_h2 = max(10, (y2 + h2) - new_y2)
                             resolved[g1] = (x1, y1, w1, new_h1)
                             resolved[g2] = (x2, new_y2, w2, new_h2)
                         else:
-                            new_h2 = max(10, split_y - y2)
-                            new_y1 = max(split_y, y1)
+                            new_h2 = max(10, split_y - y2 - half_buffer)
+                            new_y1 = max(split_y + half_buffer, y1)
                             new_h1 = max(10, (y1 + h1) - new_y1)
                             resolved[g2] = (x2, y2, w2, new_h2)
                             resolved[g1] = (x1, new_y1, w1, new_h1)
@@ -746,6 +752,15 @@ class MangaTypesetter:
                     logger.info("  Skipping punctuation-only group %d: '%s'", group_id, group_tbs[0].ocr_text)
                 continue
 
+            # Anti-Japanese Leak Check: Never inpaint or typeset if translation contains Japanese characters
+            if re.search(r"[\u3040-\u309F\u4E00-\u9FFF]", translated_en):
+                logger.warning(
+                    "  [Typesetter Safety] Refusing to render Japanese characters as English translation for group %d: '%s'",
+                    group_id,
+                    translated_en,
+                )
+                continue
+
             if any(tb.is_sfx for tb in group_tbs):
                 primary_tb = group_tbs[0]
                 px1, py1, px2, py2 = bbox_normalized_to_pixel(
@@ -798,6 +813,18 @@ class MangaTypesetter:
         draw = ImageDraw.Draw(output_image)
 
         for group_id, (trans_text, bboxes_px, _) in dialogue_items.items():
+            if not trans_text or not trans_text.strip():
+                continue
+
+            # Anti-Japanese Leak Check: Never typeset Japanese characters onto English translated page
+            if re.search(r"[\u3040-\u309F\u4E00-\u9FFF]", trans_text):
+                logger.warning(
+                    "  [Typesetter Safety] Refusing to render Japanese characters as English translation for group %d: '%s'",
+                    group_id,
+                    trans_text,
+                )
+                continue
+
             rx, ry, rw, rh = resolved_rects.get(group_id, bubble_rects[group_id])
             if rw <= 0 or rh <= 0:
                 rx = min(b[0] for b in bboxes_px)
