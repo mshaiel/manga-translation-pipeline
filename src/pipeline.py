@@ -340,21 +340,20 @@ class MangaTranslationPipeline:
                 bubble_groups = group_same_bubble_texts(ordered_boxes, det.text_character_associations)
                 all_bubble_groups.append(bubble_groups)
 
-                # 4. Assemble Translation Request (isolating silence bubbles & filtering punctuation)
+                # 4. Assemble Translation Request (filtering silence and standalone punctuation)
                 trans_items: list[TranslationRequestItem] = []
-                silence_items: list[TranslationItem] = []
                 for group_id, group_tbs in bubble_groups.items():
                     concatenated_text = "".join(tb.ocr_text.strip() for tb in group_tbs)
 
-                    # Silence / pause bubble (e.g. '……', '...', '---'): Pre-populate locally without querying LLM
-                    if is_silence_bubble(concatenated_text) or any(is_silence_bubble(tb.ocr_text) for tb in group_tbs):
-                        logger.info("  Detected silence bubble %d: '%s' -> assigned '...'", group_id, concatenated_text)
-                        silence_items.append(TranslationItem(id=group_id, english="..."))
-                        continue
-
-                    # Filter standalone punctuation (e.g. '?', '!'): Do not overwrite or translate
-                    if is_punctuation_only(concatenated_text) or all(is_punctuation_only(tb.ocr_text) for tb in group_tbs):
-                        logger.info("  Skipping punctuation-only box/group %d: '%s'", group_id, concatenated_text)
+                    # Silence / pause bubble (e.g. '……', '...', '---') or standalone punctuation:
+                    # Leave completely untouched in original artwork (no inpaint, no LLM query, no typesetting)
+                    if (
+                        is_silence_bubble(concatenated_text)
+                        or any(is_silence_bubble(tb.ocr_text) for tb in group_tbs)
+                        or is_punctuation_only(concatenated_text)
+                        or all(is_punctuation_only(tb.ocr_text) for tb in group_tbs)
+                    ):
+                        logger.info("  Leaving silence/punctuation bubble %d untouched in original artwork: '%s'", group_id, concatenated_text)
                         continue
 
                     speaker_val = group_tbs[0].speaker_name or (
@@ -406,10 +405,6 @@ class MangaTranslationPipeline:
                     trans_response = self.translator.translate(req)
                 else:
                     trans_response = TranslationResponse(translations=[])
-
-                # Attach pre-calculated silence items (guarantees no dialogue hallucination)
-                if silence_items:
-                    trans_response.translations.extend(silence_items)
 
                 # 7. Safety Net: Ensure all requested IDs have a translation entry
                 expected_ids = {item.id for item in trans_items}

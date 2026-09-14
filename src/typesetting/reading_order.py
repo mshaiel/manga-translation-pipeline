@@ -274,9 +274,10 @@ def _should_group_boxes(
     1. Same panel assignment.
     2. Both are dialogue (is_essential=True, is_sfx=False).
     3. Neither box's OCR text is empty.
-    4. Same speaker: BOTH have confirmed character association pointing to the same character.
-    5. Vertical overlap >= 70%.
-    6. Horizontal gap <= 50% of the narrower box's width.
+    4. Speaker compatibility: MUST NOT have explicitly conflicting speakers.
+    5. Proximity:
+       - Multi-column vertical text (vertical overlap >= 40% and horizontal gap <= 2.5x width), OR
+       - Split horizontal lines (horizontal overlap >= 40% and vertical gap <= 1.5x height).
     """
     # 1. Same panel
     if a.panel_id != b.panel_id:
@@ -290,38 +291,52 @@ def _should_group_boxes(
     if not a.ocr_text or not a.ocr_text.strip() or not b.ocr_text or not b.ocr_text.strip():
         return False
 
-    # 4. Same speaker: BOTH must have confirmed character association or matching speaker
-    matched_speaker = False
+    # 4. Speaker compatibility: Reject ONLY if there is an explicit mismatch between two identified speakers
     if text_char_map:
         ca = text_char_map.get(a.id)
         cb = text_char_map.get(b.id)
-        if ca is not None and cb is not None and ca == cb:
-            matched_speaker = True
-    if not matched_speaker and a.speaker_cluster_id is not None and b.speaker_cluster_id is not None:
-        if a.speaker_cluster_id == b.speaker_cluster_id:
-            matched_speaker = True
-    if not matched_speaker and a.speaker_name and b.speaker_name:
-        if a.speaker_name == b.speaker_name:
-            matched_speaker = True
+        if ca is not None and cb is not None and ca != cb:
+            return False
 
-    if not matched_speaker:
-        return False
+    if a.speaker_cluster_id is not None and b.speaker_cluster_id is not None:
+        if a.speaker_cluster_id != b.speaker_cluster_id:
+            return False
 
-    # 5. Vertical overlap >= 70%
+    if a.speaker_name and b.speaker_name:
+        if a.speaker_name != b.speaker_name:
+            return False
+
+    # 5. Proximity Check
     overlap_y1 = max(a.bbox.y1, b.bbox.y1)
     overlap_y2 = min(a.bbox.y2, b.bbox.y2)
     overlap_h = max(0.0, overlap_y2 - overlap_y1)
     min_h = min(a.bbox.height, b.bbox.height)
-    if min_h <= 0.0 or (overlap_h / min_h) < 0.70:
-        return False
 
-    # 6. Horizontal gap <= 50% of the narrower box's width
-    gap_x = max(0.0, max(a.bbox.x1, b.bbox.x1) - min(a.bbox.x2, b.bbox.x2))
+    overlap_x1 = max(a.bbox.x1, b.bbox.x1)
+    overlap_x2 = min(a.bbox.x2, b.bbox.x2)
+    overlap_w = max(0.0, overlap_x2 - overlap_x1)
     min_w = min(a.bbox.width, b.bbox.width)
-    if min_w <= 0.0 or (gap_x / min_w) > 0.50:
-        return False
 
-    return True
+    gap_x = max(0.0, max(a.bbox.x1, b.bbox.x1) - min(a.bbox.x2, b.bbox.x2))
+    gap_y = max(0.0, max(a.bbox.y1, b.bbox.y1) - min(a.bbox.y2, b.bbox.y2))
+
+    # Case A: Adjacent vertical columns (typical manga dialogue layout)
+    is_multi_column = (
+        min_h > 0.0
+        and (overlap_h / min_h) >= 0.40
+        and min_w > 0.0
+        and (gap_x / min_w) <= 2.50
+    )
+
+    # Case B: Vertically stacked clauses in the same speech bubble
+    is_stacked_clause = (
+        min_w > 0.0
+        and (overlap_w / min_w) >= 0.40
+        and min_h > 0.0
+        and (gap_y / min_h) <= 1.50
+    )
+
+    return is_multi_column or is_stacked_clause
 
 
 def group_same_bubble_texts(

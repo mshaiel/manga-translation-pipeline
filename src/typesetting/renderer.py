@@ -32,7 +32,7 @@ class MangaTypesetter:
     def __init__(
         self,
         font_path: str | Path = "assets/fonts/manga_font.ttf",
-        max_font_size: int = 24,
+        max_font_size: int = 48,
         min_font_size: int = 8,
         dialogue_text_color: str | tuple[int, int, int] = (0, 0, 0),
         inpaint_bg_color: str | tuple[int, int, int] = (255, 255, 255),
@@ -115,68 +115,110 @@ class MangaTypesetter:
         text: str,
         box_width: int,
         box_height: int,
-        padding_ratio: float = 0.08,
+        padding_ratio: float = 0.10,
     ) -> tuple[ImageFont.FreeTypeFont | ImageFont.ImageFont, list[str], int, int]:
-        """Dynamically fit and word-wrap text to fit inside target bounding dimensions.
+        """Dynamically fit and word-wrap text into an elliptical speech bubble.
 
-        Shrinks font size from `max_font_size` down to `min_font_size` in a loop
-        until all wrapped lines fit completely within the padded box bounds.
+        Conforms to professional comic lettering standards:
+        - Whole-word wrapping: NEVER slices words across lines (no 'kille-d').
+        - Elliptical safe area: Computes allowed width for each line based on its
+          vertical distance from the center of the oval (diamond/oval silhouette).
+        - Dynamic scaling: Searches font sizes from max_font_size down to min_font_size
+          to ensure dialogue comfortably fills the speech bubble without spillover.
 
         Args:
             text: Text string to render.
             box_width: Available pixel width.
             box_height: Available pixel height.
-            padding_ratio: Margin fraction inside the box boundary (default 8%).
+            padding_ratio: Margin fraction inside the box boundary (default 10%).
 
         Returns:
             Tuple of (fitted_font, wrapped_lines, total_text_width, total_text_height).
         """
-        usable_w = max(10, int(box_width * (1.0 - padding_ratio * 2)))
-        usable_h = max(10, int(box_height * (1.0 - padding_ratio * 2)))
+        clean_text = text.strip()
+        if not clean_text:
+            return self._load_font(self.min_font_size), [""], 10, 10
 
-        best_font = self._load_font(self.min_font_size)
-        best_lines = [text]
-        best_w, best_h = usable_w, usable_h
+        words = clean_text.split()
+        safe_w = max(20, int(box_width * (1.0 - padding_ratio * 2)))
+        safe_h = max(20, int(box_height * (1.0 - padding_ratio * 2)))
 
-        # Dummy draw context for measuring textbbox
         dummy_img = Image.new("RGB", (1, 1))
         draw = ImageDraw.Draw(dummy_img)
 
-        # Shrink loop from max_font_size down to min_font_size
-        for font_size in range(self.max_font_size, self.min_font_size - 1, -1):
+        best_font = self._load_font(self.min_font_size)
+        best_lines = [clean_text]
+        best_w, best_h = safe_w, safe_h
+
+        # Upper bound font size capped by safe height
+        target_max_size = min(self.max_font_size, max(self.min_font_size, safe_h // 2))
+
+        for font_size in range(target_max_size, self.min_font_size - 1, -1):
             font = self._load_font(font_size)
+            spacing = max(2, int(font_size * 0.22))
 
-            # Estimate approximate wrap character width based on average glyph width
-            avg_char_w = max(4, font_size * 0.55)
-            wrap_width = max(3, int(usable_w / avg_char_w))
+            # Measure width of each word individually
+            word_widths = []
+            for w in words:
+                bbox = draw.textbbox((0, 0), w, font=font)
+                word_widths.append(bbox[2] - bbox[0])
 
-            lines = textwrap.wrap(text, width=wrap_width, break_long_words=True)
-            if not lines:
-                lines = [text]
+            # If any single word exceeds safe_w, this font size is too large
+            if max(word_widths) > safe_w:
+                continue
 
-            # Measure total multi-line bounding box
-            line_heights: list[int] = []
-            line_widths: list[int] = []
+            test_bbox = draw.textbbox((0, 0), "Ay", font=font)
+            single_line_h = test_bbox[3] - test_bbox[1]
+            line_step = single_line_h + spacing
 
-            for line in lines:
-                bbox = draw.textbbox((0, 0), line, font=font)
-                lw = bbox[2] - bbox[0]
-                lh = bbox[3] - bbox[1]
+            # Average width for elliptical lines (~85% of safe width)
+            avg_chord = safe_w * 0.85
+            candidate_lines: list[str] = []
+            curr_line = ""
+
+            # Greedy whole-word wrapping (zero word breaking)
+            for word in words:
+                candidate = f"{curr_line} {word}" if curr_line else word
+                c_bbox = draw.textbbox((0, 0), candidate, font=font)
+                cw = c_bbox[2] - c_bbox[0]
+                if cw <= avg_chord or not curr_line:
+                    curr_line = candidate
+                else:
+                    candidate_lines.append(curr_line)
+                    curr_line = word
+            if curr_line:
+                candidate_lines.append(curr_line)
+
+            num_lines = len(candidate_lines)
+            total_text_h = num_lines * single_line_h + (num_lines - 1) * spacing
+            if total_text_h > safe_h:
+                continue
+
+            # Verify that every line fits inside its specific elliptical chord:
+            # At distance line_cy from vertical center, chord = safe_w * sqrt(1 - (2*line_cy/safe_h)^2)
+            lines_fit = True
+            line_widths = []
+            for idx, line in enumerate(candidate_lines):
+                lb = draw.textbbox((0, 0), line, font=font)
+                lw = lb[2] - lb[0]
                 line_widths.append(lw)
-                line_heights.append(lh)
 
-            spacing = max(2, int(font_size * 0.2))
-            total_h = sum(line_heights) + spacing * (len(lines) - 1)
-            total_w = max(line_widths) if line_widths else 0
+                line_cy = (idx + 0.5) * line_step - (total_text_h / 2.0)
+                norm_y = abs(line_cy) / (safe_h / 2.0)
+                chord_factor = np.sqrt(max(0.10, 1.0 - norm_y ** 2)) if norm_y < 1.0 else 0.30
+                allowed_w = safe_w * chord_factor
 
-            # Check if text fits inside available width and height
-            if total_w <= usable_w and total_h <= usable_h:
-                return font, lines, total_w, total_h
+                if lw > allowed_w:
+                    lines_fit = False
+                    break
+
+            if lines_fit:
+                return font, candidate_lines, max(line_widths), total_text_h
 
             best_font = font
-            best_lines = lines
-            best_w = total_w
-            best_h = total_h
+            best_lines = candidate_lines
+            best_w = max(line_widths) if line_widths else safe_w
+            best_h = total_text_h
 
         return best_font, best_lines, best_w, best_h
 
@@ -338,18 +380,19 @@ class MangaTypesetter:
 
         rx, ry, rw, rh = cv2.boundingRect(accumulated_mask)
         mask_area = cv2.countNonZero(accumulated_mask)
-        union_area = ubw * ubh
+        page_area = img_w * img_h
 
-        # 5. Sanity Check: If flood fill leaked outside an open/unbordered bubble
+        # 5. Sanity Check: A true leak occurs when the flood fill spills over the whole page
+        # (>40% page area) or spans >85% of image width/height when unconstrained by panel.
         leaked = (
             mask_area == 0
-            or rw > max(int(ubw * 3.5), 160)
-            or rh > max(int(ubh * 3.0), 160)
-            or mask_area > max(union_area * 6, 200000)
+            or mask_area > (page_area * 0.40)
+            or rw > (img_w * 0.85)
+            or rh > (img_h * 0.85)
         )
 
         if leaked:
-            # Fallback to tight text-fit mask with gentle 8px padding (never a giant rectangle)
+            # Fallback to tight text-fit mask with gentle 8px padding (never an overflowing rectangle)
             pad_x = 8
             pad_y = 6
             fallback_mask = np.zeros_like(image_gray)
@@ -361,6 +404,65 @@ class MangaTypesetter:
             return fallback_mask, (fx1, fy1, fx2 - fx1, fy2 - fy1)
 
         return accumulated_mask, (rx, ry, rw, rh)
+
+    @staticmethod
+    def partition_conjoined_bubble_rects(
+        bubble_centers: dict[int, tuple[int, int]],
+        bubble_masks: dict[int, np.ndarray],
+    ) -> dict[int, tuple[int, int, int, int]]:
+        """Partition bounding boxes of conjoined bubbles sharing a connected interior.
+
+        When two distinct dialogue groups sit inside conjoined lobes of a compound bubble,
+        splits the compound bounding box along the lobe divider so each dialogue group
+        is lettered directly inside its own lobe.
+        """
+        result_rects = {}
+        group_ids = list(bubble_centers.keys())
+
+        for i, gid in enumerate(group_ids):
+            mask = bubble_masks.get(gid)
+            if mask is None:
+                continue
+            rx, ry, rw, rh = cv2.boundingRect(mask)
+            if rw <= 0 or rh <= 0:
+                continue
+
+            my_cx, my_cy = bubble_centers[gid]
+
+            # Check if any other dialogue group sits in the same connected mask
+            for j, other_gid in enumerate(group_ids):
+                if i == j:
+                    continue
+                other_cx, other_cy = bubble_centers[other_gid]
+                if (
+                    0 <= other_cx < mask.shape[1]
+                    and 0 <= other_cy < mask.shape[0]
+                    and mask[other_cy, other_cx] == 255
+                ):
+                    dx = abs(my_cx - other_cx)
+                    dy = abs(my_cy - other_cy)
+                    if dx >= dy:
+                        # Split horizontally between lobe centers
+                        split_x = (my_cx + other_cx) // 2
+                        if my_cx < other_cx:
+                            rw = min(rw, max(20, split_x - rx))
+                        else:
+                            new_rx = max(rx, split_x)
+                            rw = min(rw, max(20, (rx + rw) - new_rx))
+                            rx = new_rx
+                    else:
+                        # Split vertically between lobe centers
+                        split_y = (my_cy + other_cy) // 2
+                        if my_cy < other_cy:
+                            rh = min(rh, max(20, split_y - ry))
+                        else:
+                            new_ry = max(ry, split_y)
+                            rh = min(rh, max(20, (ry + rh) - new_ry))
+                            ry = new_ry
+
+            result_rects[gid] = (rx, ry, rw, rh)
+
+        return result_rects
 
     @staticmethod
     def resolve_non_overlapping_rects(
@@ -622,11 +724,17 @@ class MangaTypesetter:
         # ======================================================================
         composite_inpaint_mask = np.zeros((height, width), dtype=np.uint8)
         bubble_rects: dict[int, tuple[int, int, int, int]] = {}
+        bubble_masks: dict[int, np.ndarray] = {}
+        bubble_centers: dict[int, tuple[int, int]] = {}
 
         for group_id, (trans_text, bboxes_px, panel_px) in dialogue_items.items():
             b_mask, b_rect = self.segment_bubble_mask(img_gray, bboxes_px, panel_pixels=panel_px)
             composite_inpaint_mask = cv2.bitwise_or(composite_inpaint_mask, b_mask)
             bubble_rects[group_id] = b_rect
+            bubble_masks[group_id] = b_mask
+            cx = int(sum(b[0] + b[2] for b in bboxes_px) / (2 * len(bboxes_px)))
+            cy = int(sum(b[1] + b[3] for b in bboxes_px) / (2 * len(bboxes_px)))
+            bubble_centers[group_id] = (cx, cy)
 
         # Apply composite inpaint mask to RGB canvas
         bg = self.inpaint_bg_color
@@ -637,8 +745,14 @@ class MangaTypesetter:
         # ======================================================================
         # PASS 2: Typesetting Pass (Render text into clean, non-overlapping boxes)
         # ======================================================================
+        # Partition conjoined bubble masks if multiple dialogue groups share them
+        partitioned_rects = self.partition_conjoined_bubble_rects(bubble_centers, bubble_masks)
+        for gid, r in bubble_rects.items():
+            if gid not in partitioned_rects:
+                partitioned_rects[gid] = r
+
         # Resolve collisions between adjacent/connected bubbles
-        resolved_rects = self.resolve_non_overlapping_rects(bubble_rects)
+        resolved_rects = self.resolve_non_overlapping_rects(partitioned_rects)
 
         draw = ImageDraw.Draw(output_image)
 

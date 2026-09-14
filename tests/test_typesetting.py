@@ -198,3 +198,41 @@ class TestMangaTypesetter:
         box2_pixels = out_np[210:330, 210:330]
         assert np.any(box1_pixels == [0, 0, 0])
         assert np.any(box2_pixels == [0, 0, 0])
+
+    def test_fit_text_to_box_never_breaks_words(self):
+        typesetter = MangaTypesetter(max_font_size=48, min_font_size=8)
+        text = "He was brutally killed by the dark swordsman."
+        font, lines, text_w, text_h = typesetter.fit_text_to_box(text, box_width=120, box_height=140)
+        all_words_in_lines = []
+        for line in lines:
+            all_words_in_lines.extend(line.split())
+        assert all_words_in_lines == text.split()
+        assert "killed" in all_words_in_lines
+        assert "kille" not in all_words_in_lines
+
+    def test_partition_conjoined_bubble_rects(self):
+        import cv2
+
+        mask = np.zeros((400, 600), dtype=np.uint8)
+        # Lobe 1 (left)
+        cv2.circle(mask, (200, 200), 100, 255, -1)
+        # Lobe 2 (right)
+        cv2.circle(mask, (380, 200), 90, 255, -1)
+
+        bubble_centers = {
+            1: (200, 200),
+            2: (380, 200),
+        }
+        bubble_masks = {
+            1: mask,
+            2: mask,
+        }
+
+        partitioned = MangaTypesetter.partition_conjoined_bubble_rects(bubble_centers, bubble_masks)
+        assert 1 in partitioned and 2 in partitioned
+        r1 = partitioned[1]
+        r2 = partitioned[2]
+        # Partition divider is at (200 + 380) // 2 = 290
+        assert r1[0] + r1[2] <= 290
+        assert r2[0] >= 290
+

@@ -28,9 +28,9 @@ SILENCE_OR_PUNCTUATION_REGEX = re.compile(
     r"^[\s？！?!…。、．・〜～ー―─–—「」『』（）\(\)\[\]\{\}\.\,\!\?\:\;\-・･•‥⋮⋯︙´`'\"]+$"
 )
 
-# Short noise patterns often produced by OCR on dots/silence (e.g. '…っ', '…ッ', '…・', 'っ')
+# Short noise patterns often produced by OCR on dots/silence (e.g. '…っ', '…ッ', '…・', 'っ', 'ミ', 'こ')
 SILENCE_NOISE_REGEX = re.compile(
-    r"^[\s…‥⋮⋯︙\.\-―─–—]*[っッ][\s…‥⋮⋯︙\.\-―─–—]*$"
+    r"^[\s…‥⋮⋯︙\.\-―─–—・･•]*[っッミこ二三][\s…‥⋮⋯︙\.\-―─–—・･•]*$"
 )
 
 
@@ -59,17 +59,24 @@ def is_punctuation_only(ocr_text: str) -> bool:
 
 
 def is_silence_bubble(ocr_text: str) -> bool:
-    """Return True if the text represents a silence or pause bubble (ellipses, dots, dashes).
+    """Return True if the text represents a silence, pause, or ellipsis bubble.
 
-    Distinguishes silence bubbles ('……', '...', '---') which should be rendered as '...'
-    from standalone punctuation marks ('?', '!') which should remain unrendered.
+    Captures:
+    - Pure dots and ellipses ('……', '...', '‥', '⋮', '⋯', '︙', '―', '---')
+    - Empty or whitespace-only OCR crops
+    - 1-2 character noise artifacts on dot textures ('…っ', 'っ', '・', 'ミ', 'こ')
     """
     if not ocr_text or not ocr_text.strip():
-        return False
+        return True
     stripped = ocr_text.strip()
     if not is_silence_or_punctuation(stripped):
         return False
-    return bool(re.search(r"[…\.\-―─–—ー・･•‥⋮⋯︙]", stripped))
+    # If it matched silence/punctuation, check if it's dots/ellipses/dashes or short dot noise
+    if re.search(r"[…\.\-―─–—ー・･•‥⋮⋯︙]", stripped):
+        return True
+    if len(stripped) <= 2 and SILENCE_NOISE_REGEX.match(stripped):
+        return True
+    return False
 
 
 def is_predominantly_katakana(text: str, threshold: float = 0.60) -> bool:
