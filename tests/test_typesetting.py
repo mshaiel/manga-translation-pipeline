@@ -236,3 +236,62 @@ class TestMangaTypesetter:
         assert r1[0] + r1[2] <= 290
         assert r2[0] >= 290
 
+    def test_segment_bubble_mask_corner_leak_containment(self):
+        import cv2
+
+        typesetter = MangaTypesetter()
+        # White page (800x1000)
+        page = np.ones((1000, 800), dtype=np.uint8) * 255
+        # Corner panel at top-right with an open bubble poking into the white margin
+        cv2.rectangle(page, (450, 50), (750, 400), 0, 3)
+        # Open gap at top
+        page[45:55, 590:610] = 255
+
+        # Text box at (570, 100, 630, 140)
+        mask, (rx, ry, rw, rh) = typesetter.segment_bubble_mask(
+            page,
+            [(570, 100, 630, 140)],
+            panel_pixels=(450, 50, 750, 400),
+        )
+        # Bounding box should NOT have leaked over the whole margin / page
+        assert rw <= 200
+        assert rh <= 200
+        # Text box is fully covered
+        assert mask[120, 600] == 255
+        # Outside the panel/corner must not be masked
+        assert mask[10, 10] == 0
+        assert mask[10, 700] == 0
+
+    def test_typeset_page_silence_bubble_untouched(self):
+        typesetter = MangaTypesetter()
+        # Page with gray background simulating manga screentone
+        img = Image.new("RGB", (400, 600), color=(180, 180, 180))
+
+        # Box 1: Dialogue
+        tb_dialogue = TextBox(id=1, bbox=[0.2, 0.2, 0.4, 0.4], ocr_text="こんにちは", is_essential=True)
+        # Box 2: Silence bubble (vertical dots)
+        tb_silence = TextBox(id=2, bbox=[0.5, 0.5, 0.6, 0.7], ocr_text="...", is_silence=True, is_essential=True)
+
+        detection = PageDetection(
+            page_index=0,
+            image_width=400,
+            image_height=600,
+            text_boxes=[tb_dialogue, tb_silence],
+        )
+
+        translation = TranslationResponse(
+            translations=[
+                TranslationItem(id=1, english="Hello!"),
+            ],
+            confidence=1.0,
+        )
+
+        out = typesetter.typeset_page(img, detection, translation)
+        out_np = np.array(out)
+
+        # Dialogue box center (180, 120) should have been inpainted white (255, 255, 255)
+        assert np.all(out_np[180, 120] == [255, 255, 255])
+        # Silence box center (360, 220) must NOT be inpainted white! Remains original gray (180, 180, 180)
+        assert np.all(out_np[360, 220] == [180, 180, 180])
+
+

@@ -203,7 +203,20 @@ def sort_page_dialogue(page: PageDetection, preserve_magi_order: bool = False) -
 
     # If preserve_magi_order is True or no panels, preserve native Magi order
     if preserve_magi_order or not page.panels:
-        ordered_direct = page.text_boxes if preserve_magi_order else order_text_boxes_within_panel(page.text_boxes)
+        if page.panels:
+            ordered_panels = order_panels_manga(page.panels)
+            panel_map, _ = assign_text_boxes_to_panels(ordered_panels, page.text_boxes)
+            tb_to_panel = {}
+            for pid, p_tbs in panel_map.items():
+                for pt in p_tbs:
+                    tb_to_panel[pt.id] = pid
+            ordered_direct = [
+                tb.model_copy(update={"panel_id": tb_to_panel.get(tb.id, tb.panel_id)})
+                for tb in page.text_boxes
+            ]
+        else:
+            ordered_direct = page.text_boxes if preserve_magi_order else order_text_boxes_within_panel(page.text_boxes)
+
         return [
             tb.model_copy(update={"reading_order_index": i})
             for i, tb in enumerate(ordered_direct)
@@ -272,26 +285,34 @@ def _should_group_boxes(
 
     Criteria:
     1. Same panel assignment.
-    2. Both are dialogue (is_essential=True, is_sfx=False).
-    3. Neither box's OCR text is empty.
-    4. Speaker compatibility: MUST NOT have explicitly conflicting speakers.
-    5. Proximity:
-       - Multi-column vertical text (vertical overlap >= 40% and horizontal gap <= 2.5x width), OR
-       - Split horizontal lines (horizontal overlap >= 40% and vertical gap <= 1.5x height).
+    2. Neither box is a silence bubble (silence bubbles are never merged).
+    3. Both are dialogue (is_essential=True, is_sfx=False).
+    4. Neither box's OCR text is empty.
+    5. Speaker compatibility: MUST NOT have explicitly conflicting speakers.
+    6. Tight Proximity:
+       - Multi-column vertical text (vertical overlap >= 50% and horizontal gap <= 1.8x width), OR
+       - Split horizontal lines (horizontal overlap >= 50% and vertical gap <= 1.2x height).
     """
-    # 1. Same panel
+    # 1. Same panel: reject if panel IDs differ
     if a.panel_id != b.panel_id:
         return False
 
-    # 2. Both are dialogue (not SFX)
+    # 2. Silence isolation: silence bubbles are never merged with dialogue or other bubbles
+    if getattr(a, "is_silence", False) or getattr(b, "is_silence", False):
+        return False
+    from src.ocr.sfx_classifier import is_silence_bubble
+    if is_silence_bubble(a.ocr_text) or is_silence_bubble(b.ocr_text):
+        return False
+
+    # 3. Both are dialogue (not SFX)
     if not (a.is_essential and not a.is_sfx and b.is_essential and not b.is_sfx):
         return False
 
-    # 3. Neither box's OCR text is empty
+    # 4. Neither box's OCR text is empty
     if not a.ocr_text or not a.ocr_text.strip() or not b.ocr_text or not b.ocr_text.strip():
         return False
 
-    # 4. Speaker compatibility: Reject ONLY if there is an explicit mismatch between two identified speakers
+    # 5. Speaker compatibility: Reject ONLY if there is an explicit mismatch between two identified speakers
     if text_char_map:
         ca = text_char_map.get(a.id)
         cb = text_char_map.get(b.id)
@@ -306,7 +327,7 @@ def _should_group_boxes(
         if a.speaker_name != b.speaker_name:
             return False
 
-    # 5. Proximity Check
+    # 6. Proximity Check
     overlap_y1 = max(a.bbox.y1, b.bbox.y1)
     overlap_y2 = min(a.bbox.y2, b.bbox.y2)
     overlap_h = max(0.0, overlap_y2 - overlap_y1)
@@ -323,17 +344,17 @@ def _should_group_boxes(
     # Case A: Adjacent vertical columns (typical manga dialogue layout)
     is_multi_column = (
         min_h > 0.0
-        and (overlap_h / min_h) >= 0.40
+        and (overlap_h / min_h) >= 0.50
         and min_w > 0.0
-        and (gap_x / min_w) <= 2.50
+        and (gap_x / min_w) <= 1.80
     )
 
     # Case B: Vertically stacked clauses in the same speech bubble
     is_stacked_clause = (
         min_w > 0.0
-        and (overlap_w / min_w) >= 0.40
+        and (overlap_w / min_w) >= 0.50
         and min_h > 0.0
-        and (gap_y / min_h) <= 1.50
+        and (gap_y / min_h) <= 1.20
     )
 
     return is_multi_column or is_stacked_clause

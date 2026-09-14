@@ -104,6 +104,7 @@ class TextBox(BaseModel):
     speaker_cluster_id: int | None = Field(default=None, description="Magi cluster ID if name unknown")
     speaker_confidence: float = Field(default=1.0, description="Confidence of speaker attribution in [0.0, 1.0]")
     ocr_confidence: float = Field(default=1.0, description="Confidence of OCR recognition in [0.0, 1.0]")
+    is_silence: bool = Field(default=False, description="True if text region represents silence, vertical dots, or pause")
     panel_id: int | None = Field(default=None, description="ID of the containing panel")
     reading_order_index: int | None = Field(default=None, description="Sequential reading order index on the page")
 

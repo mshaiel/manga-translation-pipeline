@@ -81,6 +81,10 @@ class TestSfxClassifier:
         assert is_silence_bubble("っ") is True
         assert is_silence_bubble("・") is True
         assert is_silence_bubble("こ") is True
+        assert is_silence_bubble("︰") is True
+        assert is_silence_bubble("┆") is True
+        assert is_silence_bubble("|") is True
+        assert is_silence_bubble(":::") is True
 
         # Standalone punctuation without dots is not a silence bubble
         assert is_silence_bubble("？") is False
@@ -90,4 +94,27 @@ class TestSfxClassifier:
         # Actual dialogue is not a silence bubble
         assert is_silence_bubble("もちろんモチちゃんとも") is False
         assert is_silence_bubble("待て！") is False
+
+    def test_is_crop_visually_silent(self):
+        import cv2
+        import numpy as np
+        from src.ocr.sfx_classifier import is_crop_visually_silent
+
+        # 1. 3 vertical dots on white canvas
+        crop_dots = np.ones((120, 40), dtype=np.uint8) * 255
+        cv2.circle(crop_dots, (20, 30), 3, 0, -1)
+        cv2.circle(crop_dots, (20, 60), 3, 0, -1)
+        cv2.circle(crop_dots, (20, 90), 3, 0, -1)
+        assert is_crop_visually_silent(crop_dots) is True
+
+        # 2. Empty white crop
+        crop_empty = np.ones((100, 50), dtype=np.uint8) * 255
+        assert is_crop_visually_silent(crop_empty) is True
+
+        # 3. Dense Japanese text strokes
+        crop_text = np.ones((120, 40), dtype=np.uint8) * 255
+        for y in range(15, 105, 8):
+            cv2.line(crop_text, (10, y), (30, y), 0, 2)
+        assert is_crop_visually_silent(crop_text) is False
+
 

@@ -8,6 +8,8 @@ to cleanly route dialogue bubbles to inpainting and sound effects to Viz Media s
 from __future__ import annotations
 
 import re
+import cv2
+import numpy as np
 
 # Regex matching Japanese Katakana characters (standard, phonetic extensions, half-width)
 KATAKANA_REGEX = re.compile(r"[\u30A0-\u30FF\u31F0-\u31FF\uFF65-\uFF9F]")
@@ -23,15 +25,72 @@ DIALOGUE_GRAMMAR_REGEX = re.compile(
     r"(?:[はがをにでのともかねよぞわぜ]|[だで]す|[だっ]た|ない|たい|てる|でる|から|けど|って|お前|おれ|私|僕|何|誰|どこ|いつ|どう|そう|これ|それ|あれ|ありがとう|助かった|待て|行く|来る|やる|見る|言う)"
 )
 
-# Matches text that consists strictly of punctuation, ellipses, dots, dashes, and whitespace (silence/non-dialogue)
+# Matches text that consists strictly of punctuation, ellipses, dots, dashes, vertical leaders, and whitespace
 SILENCE_OR_PUNCTUATION_REGEX = re.compile(
-    r"^[\s？！?!…。、．・〜～ー―─–—「」『』（）\(\)\[\]\{\}\.\,\!\?\:\;\-・･•‥⋮⋯︙´`'\"]+$"
+    r"^[\s？！?!…。、．・〜～ー―─–—「」『』（）\(\)\[\]\{\}\.\,\!\?\:\;\-・･•‥⋮⋯︙´`'\"|｜￤┆┊︰︓︔﹗●○]+$"
 )
 
-# Short noise patterns often produced by OCR on dots/silence (e.g. '…っ', '…ッ', '…・', 'っ', 'ミ', 'こ')
+# Short noise patterns often produced by OCR on dots/silence (e.g. '…っ', '…ッ', '…・', 'っ', 'ミ', 'こ', '二', '三')
 SILENCE_NOISE_REGEX = re.compile(
-    r"^[\s…‥⋮⋯︙\.\-―─–—・･•]*[っッミこ二三][\s…‥⋮⋯︙\.\-―─–—・･•]*$"
+    r"^[\s…‥⋮⋯︙\.\-―─–—・･•|｜￤┆┊︰︓\:\;]*[っッミこ二三一1Il!]*[\s…‥⋮⋯︙\.\-―─–—・･•|｜￤┆┊︰︓\:\;]*$"
 )
+
+
+def is_crop_visually_silent(crop_np: np.ndarray) -> bool:
+    """Detect whether an image crop contains only vertical dots, ellipsis, or silence.
+
+    Directly analyzes foreground ink density and connected components. This provides
+    robust immunity against OCR hallucination or character misclassification on vertical
+    Japanese manga ellipsis bubbles.
+    """
+    if crop_np is None or crop_np.size == 0:
+        return True
+
+    if crop_np.ndim == 3:
+        gray = cv2.cvtColor(crop_np, cv2.COLOR_RGB2GRAY)
+    else:
+        gray = crop_np
+
+    h, w = gray.shape
+    if h == 0 or w == 0:
+        return True
+
+    # Dark ink pixels in manga
+    ink_mask = (gray < 140).astype(np.uint8)
+    ink_count = int(np.count_nonzero(ink_mask))
+    total_pixels = h * w
+    ink_density = ink_count / max(1, total_pixels)
+
+    # Practically white / empty crop
+    if ink_density < 0.001:
+        return True
+
+    # Real sentences or detailed drawings have much higher ink density (> 8%)
+    if ink_density > 0.08:
+        return False
+
+    # Analyze connected components of dark ink
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(ink_mask)
+    components = []
+    for i in range(1, num_labels):
+        area = stats[i, cv2.CC_STAT_AREA]
+        comp_w = stats[i, cv2.CC_STAT_WIDTH]
+        comp_h = stats[i, cv2.CC_STAT_HEIGHT]
+        # Dots in manga are small isolated spots (typically 2x2 to 25x25)
+        if 2 <= area <= 250 and comp_w <= 30 and comp_h <= 30:
+            components.append((stats[i], centroids[i]))
+
+    # 1 to 6 small dots accounting for >= 65% of the crop's total ink
+    if 1 <= len(components) <= 6:
+        comp_ink = sum(c[0][cv2.CC_STAT_AREA] for c in components)
+        if comp_ink / max(1, ink_count) >= 0.65:
+            # Check vertical alignment (all dots near the horizontal center of the crop)
+            xs = [c[1][0] for c in components]
+            center_x = w / 2.0
+            if all(abs(x - center_x) < (w * 0.40) for x in xs):
+                return True
+
+    return False
 
 
 def is_silence_or_punctuation(ocr_text: str) -> bool:
@@ -45,7 +104,7 @@ def is_silence_or_punctuation(ocr_text: str) -> bool:
     stripped = ocr_text.strip()
     if SILENCE_OR_PUNCTUATION_REGEX.match(stripped):
         return True
-    if len(stripped) <= 3 and SILENCE_NOISE_REGEX.match(stripped):
+    if len(stripped) <= 4 and SILENCE_NOISE_REGEX.match(stripped):
         return True
     return False
 
@@ -59,24 +118,30 @@ def is_punctuation_only(ocr_text: str) -> bool:
 
 
 def is_silence_bubble(ocr_text: str) -> bool:
-    """Return True if the text represents a silence, pause, or ellipsis bubble.
+    """Return True if the text represents a silence, pause, or vertical/horizontal ellipsis bubble.
 
     Captures:
     - Pure dots and ellipses ('……', '...', '‥', '⋮', '⋯', '︙', '―', '---')
+    - Vertical manga ellipsis leaders and colons ('⋮', '︙', '︰', '┆', '┊', '::')
     - Empty or whitespace-only OCR crops
-    - 1-2 character noise artifacts on dot textures ('…っ', 'っ', '・', 'ミ', 'こ')
+    - 1-3 character noise artifacts on dot textures ('…っ', 'っ', '・', 'ミ', 'こ', '|')
     """
     if not ocr_text or not ocr_text.strip():
         return True
     stripped = ocr_text.strip()
     if not is_silence_or_punctuation(stripped):
+        # Even if not full punctuation match, short string with dot/ellipsis symbol is silence
+        if len(stripped) <= 5 and re.search(r"[…\.\-―─–—ー・･•‥⋮⋯︙︰┆┊|｜￤\:]", stripped):
+            if not is_japanese_dialogue(stripped):
+                return True
         return False
-    # If it matched silence/punctuation, check if it's dots/ellipses/dashes or short dot noise
-    if re.search(r"[…\.\-―─–—ー・･•‥⋮⋯︙]", stripped):
+    # If it matched silence/punctuation, check if it's dots/ellipses/dashes/bars or short dot noise
+    if re.search(r"[…\.\-―─–—ー・･•‥⋮⋯︙︰┆┊|｜￤\:]", stripped):
         return True
-    if len(stripped) <= 2 and SILENCE_NOISE_REGEX.match(stripped):
+    if len(stripped) <= 3 and SILENCE_NOISE_REGEX.match(stripped):
         return True
     return False
+
 
 
 def is_predominantly_katakana(text: str, threshold: float = 0.60) -> bool:

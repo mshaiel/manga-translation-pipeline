@@ -11,9 +11,14 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from PIL import Image
 
-from src.ocr.sfx_classifier import is_sfx_candidate
+from src.ocr.sfx_classifier import (
+    is_crop_visually_silent,
+    is_silence_bubble,
+    is_sfx_candidate,
+)
 from src.translation.schemas import PageDetection, TextBox
 from src.utils.gpu_utils import clear_gpu_memory, get_device
 from src.utils.image_utils import crop_image, load_pil_image
@@ -139,6 +144,10 @@ class MangaOcrEngine:
             # Crop text region using normalized coordinates with 5% margin per edge
             crop = crop_image(pil_img, tb.bbox.to_list(), normalized=True, expand_ratio=0.05)
 
+            # Check if image crop visually contains only vertical dots / silence
+            crop_np = np.array(crop)
+            is_visually_silent = is_crop_visually_silent(crop_np)
+
             # Perform OCR on the PIL crop
             if self.mock_mode or self.mocr is None:
                 ocr_text = self._generate_mock_ocr(tb.id, tb.is_essential)
@@ -146,6 +155,11 @@ class MangaOcrEngine:
             else:
                 ocr_text = self.ocr_crop(crop)
                 confidence = 0.95 if len(ocr_text.strip()) > 3 else 0.80
+
+            # Determine whether this text box is a silence bubble
+            is_silence_flag = is_visually_silent or is_silence_bubble(ocr_text)
+            if is_silence_flag:
+                ocr_text = "..."
 
             # Evaluate SFX classification combining Magi signal + linguistic heuristics + tail cues
             sfx_flag = is_sfx_candidate(
@@ -159,11 +173,12 @@ class MangaOcrEngine:
             )
 
             logger.info(
-                "  [OCR Page %d Box %d] text='%s' | SFX=%s (essential=%s, tail=%s, speaker=%s)",
+                "  [OCR Page %d Box %d] text='%s' | SFX=%s | Silence=%s (essential=%s, tail=%s, speaker=%s)",
                 detection.page_index + 1,
                 tb.id,
                 ocr_text,
                 sfx_flag,
+                is_silence_flag,
                 tb.is_essential,
                 getattr(tb, "has_tail", False),
                 tb.speaker_name or (f"Cluster_{tb.speaker_cluster_id}" if tb.speaker_cluster_id is not None else None),
@@ -174,6 +189,7 @@ class MangaOcrEngine:
                     "ocr_text": ocr_text.strip(),
                     "ocr_confidence": confidence,
                     "is_sfx": sfx_flag,
+                    "is_silence": is_silence_flag,
                 }
             )
             updated_text_boxes.append(updated_box)

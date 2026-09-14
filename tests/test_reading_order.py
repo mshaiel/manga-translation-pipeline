@@ -115,6 +115,8 @@ class TestReadingOrder:
         ordered = sort_page_dialogue(page, preserve_magi_order=True)
         assert ordered[0].id == 1
         assert ordered[1].id == 2
+        assert ordered[0].panel_id == 1
+        assert ordered[1].panel_id == 1
 
     def test_group_same_bubble_texts_adjacent_columns(self):
         from src.typesetting.reading_order import group_same_bubble_texts
@@ -167,3 +169,52 @@ class TestReadingOrder:
         groups = group_same_bubble_texts([t1, t2])
         assert len(groups) == 2
         assert 1 in groups and 2 in groups
+
+    def test_group_same_bubble_texts_different_panels_not_grouped(self):
+        from src.typesetting.reading_order import group_same_bubble_texts
+
+        # Two boxes geometrically close but in different panels (e.g. across a panel border)
+        t_panel1 = TextBox(
+            id=1,
+            bbox=[0.50, 0.20, 0.60, 0.35],
+            ocr_text="だろ？！",
+            is_essential=True,
+            is_sfx=False,
+            panel_id=1,
+        )
+        t_panel2 = TextBox(
+            id=2,
+            bbox=[0.50, 0.37, 0.60, 0.50],
+            ocr_text="行くぞ",
+            is_essential=True,
+            is_sfx=False,
+            panel_id=2,
+        )
+        groups = group_same_bubble_texts([t_panel1, t_panel2])
+        assert len(groups) == 2
+        assert 1 in groups and 2 in groups
+
+    def test_group_same_bubble_texts_silence_not_grouped(self):
+        from src.typesetting.reading_order import group_same_bubble_texts
+
+        t_dialogue = TextBox(
+            id=1,
+            bbox=[0.55, 0.10, 0.60, 0.30],
+            ocr_text="だろ？！",
+            is_essential=True,
+            is_sfx=False,
+            panel_id=1,
+        )
+        t_silence = TextBox(
+            id=2,
+            bbox=[0.50, 0.10, 0.54, 0.30],
+            ocr_text="...",
+            is_essential=True,
+            is_sfx=False,
+            is_silence=True,
+            panel_id=1,
+        )
+        groups = group_same_bubble_texts([t_dialogue, t_silence])
+        assert len(groups) == 2
+        assert 1 in groups and 2 in groups
+

@@ -87,6 +87,8 @@ def build_translation_prompt(
         "- For SFX (is_sfx=true), provide a short English comic sound equivalent (BOOM, CRASH, THUD, etc.).",
         "- Use the speaker attribution and rolling context to resolve omitted subjects — Japanese frequently drops pronouns.",
         "- If the Japanese text for an item is empty, garbled, or unrecognizable, return the original text as-is in the 'english' field and add a translator_note saying \"OCR unclear\".",
+        "- INDEPENDENT CLAUSES: Each dialogue item corresponds to a separate speech bubble or panel. Do NOT repeat, echo, or prepend phrases, questions, or exclamations from previous items into subsequent items (e.g. do NOT repeat 'Right?!' or 'Wait!' at the start of the next item unless it is explicitly present in that item's Japanese text).",
+        "- STRICT 1:1 FIDELITY: Every item's 'english' field must translate ONLY the Japanese text provided in that specific item's 'japanese' field. Never merge, repeat, or bleed sentences across different item IDs.",
         "- Do NOT invent dialogue that isn't present in the source text.",
         "- Return valid JSON matching the response schema.",
     ]

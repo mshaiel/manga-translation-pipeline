@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from src.ocr.sfx_classifier import is_punctuation_only
+from src.ocr.sfx_classifier import is_punctuation_only, is_silence_bubble
 from src.translation.schemas import PageDetection, TextBox, TranslationResponse
 from src.utils.image_utils import bbox_normalized_to_pixel, load_pil_image
 
@@ -309,19 +309,28 @@ class MangaTypesetter:
         ink_closed = cv2.morphologyEx(ink_barrier, cv2.MORPH_CLOSE, kernel_close)
         free_space = (ink_closed == 0).astype(np.uint8) * 255
 
-        # 2. Constrain free space to panel boundaries if provided
+        # 2. Local search ROI: Constrain flood fill to a bounded search window around the text box
+        # Speech bubbles in manga are centered around text; search window never needs to extend
+        # into unrelated corners, gutters, or adjacent panels.
+        pad_x = max(int(ubw * 1.0), 60)
+        pad_y = max(int(ubh * 0.8), 60)
+        roi_x1 = max(0, ux1 - pad_x)
+        roi_y1 = max(0, uy1 - pad_y)
+        roi_x2 = min(img_w, ux2 + pad_x)
+        roi_y2 = min(img_h, uy2 + pad_y)
+
+        # Constrain to panel boundaries if provided
         if panel_pixels is not None:
             p_x1, p_y1, p_x2, p_y2 = panel_pixels
-            p_x1, p_y1 = max(0, p_x1), max(0, p_y1)
-            p_x2, p_y2 = min(img_w, p_x2), min(img_h, p_y2)
-            if p_y1 > 0:
-                free_space[:p_y1, :] = 0
-            if p_y2 < img_h:
-                free_space[p_y2:, :] = 0
-            if p_x1 > 0:
-                free_space[:, :p_x1] = 0
-            if p_x2 < img_w:
-                free_space[:, p_x2:] = 0
+            roi_x1 = max(roi_x1, max(0, p_x1))
+            roi_y1 = max(roi_y1, max(0, p_y1))
+            roi_x2 = min(roi_x2, min(img_w, p_x2))
+            roi_y2 = min(roi_y2, min(img_h, p_y2))
+
+        # Blank out free space outside the search ROI to prevent gutter/margin runaway
+        roi_free_space = np.zeros_like(free_space)
+        if roi_x2 > roi_x1 and roi_y2 > roi_y1:
+            roi_free_space[roi_y1:roi_y2, roi_x1:roi_x2] = free_space[roi_y1:roi_y2, roi_x1:roi_x2]
 
         accumulated_mask = np.zeros_like(image_gray)
 
@@ -339,7 +348,7 @@ class MangaTypesetter:
             sx2 = min(img_w, bx2 + search_pad)
             sy2 = min(img_h, by2 + search_pad)
 
-            crop_free = free_space[sy1:sy2, sx1:sx2]
+            crop_free = roi_free_space[sy1:sy2, sx1:sx2]
             valid_pts = np.argwhere(crop_free == 255)
             if len(valid_pts) == 0:
                 continue
@@ -358,7 +367,7 @@ class MangaTypesetter:
             ff_mask[:, -1] = 1
 
             cv2.floodFill(
-                free_space.copy(),
+                roi_free_space.copy(),
                 ff_mask,
                 (seed_x, seed_y),
                 128,
@@ -380,30 +389,54 @@ class MangaTypesetter:
 
         rx, ry, rw, rh = cv2.boundingRect(accumulated_mask)
         mask_area = cv2.countNonZero(accumulated_mask)
-        page_area = img_w * img_h
+        text_area = ubw * ubh
 
-        # 5. Sanity Check: A true leak occurs when the flood fill spills over the whole page
-        # (>40% page area) or spans >85% of image width/height when unconstrained by panel.
+        # 5. Leak Detection:
+        # A true leak occurs if:
+        # a) Zero area (mask_area == 0)
+        # b) Mask bleeds to the ROI edge without ink boundary (open bubble or margin runaway)
+        # c) Mask area is disproportionately large compared to text box (> 6x text area)
+        # d) Width or height blows out (> 4x text width or > 3.5x text height)
+        edge_leak = False
+        if mask_area > 0 and (roi_x2 > roi_x1 and roi_y2 > roi_y1):
+            sub_mask = accumulated_mask[roi_y1:roi_y2, roi_x1:roi_x2]
+            if (
+                np.any(sub_mask[0, :] == 255)
+                or np.any(sub_mask[-1, :] == 255)
+                or np.any(sub_mask[:, 0] == 255)
+                or np.any(sub_mask[:, -1] == 255)
+            ):
+                edge_leak = True
+
         leaked = (
             mask_area == 0
-            or mask_area > (page_area * 0.40)
-            or rw > (img_w * 0.85)
-            or rh > (img_h * 0.85)
+            or edge_leak
+            or (mask_area > max(int(text_area * 6.0), 30000))
+            or (rw > max(int(ubw * 4.0), 300))
+            or (rh > max(int(ubh * 3.5), 300))
         )
 
         if leaked:
-            # Fallback to tight text-fit mask with gentle 8px padding (never an overflowing rectangle)
-            pad_x = 8
-            pad_y = 6
+            # Fallback to smooth elliptical mask around the text box (15px padding)
+            pad = 15
             fallback_mask = np.zeros_like(image_gray)
-            fx1 = max(0, ux1 - pad_x)
-            fy1 = max(0, uy1 - pad_y)
-            fx2 = min(img_w, ux2 + pad_x)
-            fy2 = min(img_h, uy2 + pad_y)
-            cv2.rectangle(fallback_mask, (fx1, fy1), (fx2, fy2), 255, -1)
-            return fallback_mask, (fx1, fy1, fx2 - fx1, fy2 - fy1)
+            fx1 = max(0, ux1 - pad)
+            fy1 = max(0, uy1 - pad)
+            fx2 = min(img_w, ux2 + pad)
+            fy2 = min(img_h, uy2 + pad)
+            fw = fx2 - fx1
+            fh = fy2 - fy1
+            fcx = fx1 + fw // 2
+            fcy = fy1 + fh // 2
+            cv2.ellipse(fallback_mask, (fcx, fcy), (fw // 2, fh // 2), 0, 0, 360, 255, -1)
+            return fallback_mask, (fx1, fy1, fw, fh)
 
-        return accumulated_mask, (rx, ry, rw, rh)
+        # Inset the typesetting box by 6% from the bubble contour so letters never collide with ink lines
+        inset_x = max(2, int(rw * 0.06))
+        inset_y = max(2, int(rh * 0.06))
+        typeset_rect = (rx + inset_x, ry + inset_y, max(20, rw - 2 * inset_x), max(20, rh - 2 * inset_y))
+
+        return accumulated_mask, typeset_rect
 
     @staticmethod
     def partition_conjoined_bubble_rects(
@@ -698,6 +731,14 @@ class MangaTypesetter:
         sfx_items: list[tuple[str, tuple[int, int, int, int]]] = []
 
         for group_id, group_tbs in bubble_groups.items():
+            # If group is silence / vertical dots: leave completely untouched on the page!
+            if (
+                any(getattr(tb, "is_silence", False) for tb in group_tbs)
+                or any(is_silence_bubble(tb.ocr_text) for tb in group_tbs)
+            ):
+                logger.info("  Preserving silence bubble %d untouched on page: '%s'", group_id, group_tbs[0].ocr_text)
+                continue
+
             translated_en = trans_map.get(group_id, "")
             # Skip if punctuation only without explicit translation
             if not translated_en.strip():

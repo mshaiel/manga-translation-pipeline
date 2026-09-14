@@ -348,7 +348,8 @@ class MangaTranslationPipeline:
                     # Silence / pause bubble (e.g. '……', '...', '---') or standalone punctuation:
                     # Leave completely untouched in original artwork (no inpaint, no LLM query, no typesetting)
                     if (
-                        is_silence_bubble(concatenated_text)
+                        any(getattr(tb, "is_silence", False) for tb in group_tbs)
+                        or is_silence_bubble(concatenated_text)
                         or any(is_silence_bubble(tb.ocr_text) for tb in group_tbs)
                         or is_punctuation_only(concatenated_text)
                         or all(is_punctuation_only(tb.ocr_text) for tb in group_tbs)
@@ -390,7 +391,11 @@ class MangaTranslationPipeline:
                 elif v_mode_str == "never":
                     page_vision_mode = False
                 else:  # "auto"
-                    page_vision_mode = any(not tb.ocr_text or len(tb.ocr_text.strip()) < 2 for tb in ordered_boxes)
+                    page_vision_mode = any(
+                        (not tb.ocr_text or len(tb.ocr_text.strip()) < 2)
+                        for tb in ordered_boxes
+                        if not getattr(tb, "is_silence", False) and not is_silence_bubble(tb.ocr_text)
+                    )
 
                 req = TranslationRequest(
                     page_index=idx,
