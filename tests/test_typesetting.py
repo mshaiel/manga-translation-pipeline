@@ -124,3 +124,77 @@ class TestMangaTypesetter:
 
         output_img = typesetter.typeset_page(img, detection, translation, bubble_groups=bubble_groups)
         assert isinstance(output_img, Image.Image)
+
+    def test_segment_bubble_mask_stops_at_ink_contour(self):
+        import cv2
+
+        typesetter = MangaTypesetter()
+        # Create a light gray canvas simulating manga screentone / background
+        test_img = np.ones((600, 600), dtype=np.uint8) * 230
+
+        # Draw a speech bubble oval with black ink border (thickness 4)
+        cv2.ellipse(test_img, (300, 300), (90, 140), 0, 0, 360, 0, 4)
+        cv2.ellipse(test_img, (300, 300), (86, 136), 0, 0, 360, 255, -1)
+        # Add a text column inside the bubble
+        cv2.rectangle(test_img, (290, 220), (310, 380), 0, -1)
+
+        mask, (rx, ry, rw, rh) = typesetter.segment_bubble_mask(test_img, [(290, 220, 310, 380)])
+
+        # 1. Inside bubble center must be masked (255)
+        assert mask[300, 300] == 255
+        # 2. Outside bubble must NOT be masked (0)
+        assert mask[100, 300] == 0
+        assert mask[500, 300] == 0
+        assert mask[300, 100] == 0
+        # 3. Outer black ink stroke must NOT be masked (preserved intact)
+        assert mask[160, 300] == 0
+
+    def test_resolve_non_overlapping_rects(self):
+        # Two overlapping rectangles
+        rects = {
+            1: (100, 100, 80, 120),
+            2: (150, 120, 80, 120),
+        }
+        resolved = MangaTypesetter.resolve_non_overlapping_rects(rects)
+        x1, y1, w1, h1 = resolved[1]
+        x2, y2, w2, h2 = resolved[2]
+
+        ix1 = max(x1, x2)
+        iy1 = max(y1, y2)
+        ix2 = min(x1 + w1, x2 + w2)
+        iy2 = min(y1 + h1, y2 + h2)
+        overlap = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        assert overlap == 0
+        assert w1 >= 10 and w2 >= 10
+
+    def test_two_pass_connected_bubbles_no_text_overwrite(self):
+        typesetter = MangaTypesetter()
+        # Create a manga page with two connected/touching speech bubbles
+        img = Image.new("RGB", (600, 600), color=(220, 220, 220))
+
+        tb1 = TextBox(id=1, bbox=[0.20, 0.20, 0.40, 0.40], ocr_text="First bubble", is_essential=True)
+        tb2 = TextBox(id=2, bbox=[0.35, 0.35, 0.55, 0.55], ocr_text="Second bubble", is_essential=True)
+
+        detection = PageDetection(
+            page_index=0,
+            image_width=600,
+            image_height=600,
+            text_boxes=[tb1, tb2],
+        )
+
+        translation = TranslationResponse(
+            translations=[
+                TranslationItem(id=1, english="Bubble One"),
+                TranslationItem(id=2, english="Bubble Two"),
+            ],
+            confidence=1.0,
+        )
+
+        out = typesetter.typeset_page(img, detection, translation)
+        out_np = np.array(out)
+        # Check that both dialogue texts exist and are rendered (not erased to pure white)
+        # Inside the dialogue boxes, there should be black text pixels (0, 0, 0)
+        box1_pixels = out_np[120:240, 120:240]
+        box2_pixels = out_np[210:330, 210:330]
+        assert np.any(box1_pixels == [0, 0, 0])
+        assert np.any(box2_pixels == [0, 0, 0])

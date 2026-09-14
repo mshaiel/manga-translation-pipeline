@@ -46,6 +46,8 @@ class TestPromptBuilder:
 
         assert "MULTIMODAL VERIFICATION" in prompt
         assert "SCENE SUMMARY" in prompt
+        assert "Do NOT borrow" in prompt
+        assert "Never invent spoken dialogue" in prompt
 
     def test_build_dialogue_payload_with_translation_request_items(self):
         from src.translation.schemas import TranslationRequestItem

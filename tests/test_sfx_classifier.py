@@ -62,3 +62,26 @@ class TestSfxClassifier:
         assert is_punctuation_only("何？") is False
         assert is_punctuation_only("What?") is False
         assert is_punctuation_only("ドン！") is False
+
+    def test_is_silence_bubble(self):
+        from src.ocr.sfx_classifier import is_silence_bubble
+
+        # Ellipses, dots, leaders, dashes
+        assert is_silence_bubble("……") is True
+        assert is_silence_bubble("...") is True
+        assert is_silence_bubble("‥") is True
+        assert is_silence_bubble("⋮⋮") is True
+        assert is_silence_bubble("︙") is True
+        assert is_silence_bubble("―――") is True
+        assert is_silence_bubble("---") is True
+        assert is_silence_bubble("…っ") is True
+        assert is_silence_bubble(" … ") is True
+
+        # Standalone punctuation without dots is not a silence bubble
+        assert is_silence_bubble("？") is False
+        assert is_silence_bubble("！") is False
+        assert is_silence_bubble("！？") is False
+
+        # Actual dialogue is not a silence bubble
+        assert is_silence_bubble("もちろんモチちゃんとも") is False
+        assert is_silence_bubble("待て！") is False

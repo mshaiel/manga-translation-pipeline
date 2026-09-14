@@ -93,8 +93,9 @@ def build_translation_prompt(
 
     if vision_mode:
         instructions.append(
-            "- MULTIMODAL VERIFICATION: A visual image of the manga page is attached. "
-            "Use it to verify the OCR text accuracy. If you can see text in the image that differs from the OCR, translate what you see in the image."
+            "- MULTIMODAL VERIFICATION: A visual image of the manga page is attached for scene context, speaker identification, and reading order. "
+            "Translate strictly the dialogue corresponding to each item's Japanese text. Do NOT borrow, duplicate, or transfer dialogue from one speech bubble into another. "
+            "If an item contains silence, dots, or an ellipsis, return '...' in the 'english' field. Never invent spoken dialogue for silent characters."
         )
 
     if request_scene_summary:

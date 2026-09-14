@@ -28,7 +28,7 @@ from src.context.memory_manager import RollingContextManager
 from src.detection.magi_detector import MagiDetector
 from src.export.exporter import ChapterExporter
 from src.ocr.manga_ocr_engine import MangaOcrEngine
-from src.ocr.sfx_classifier import is_punctuation_only
+from src.ocr.sfx_classifier import is_punctuation_only, is_silence_bubble
 from src.translation.base_provider import TranslationProvider
 from src.translation.gemini_provider import GeminiProvider
 from src.translation.mock_provider import MockTranslationProvider
@@ -340,16 +340,23 @@ class MangaTranslationPipeline:
                 bubble_groups = group_same_bubble_texts(ordered_boxes, det.text_character_associations)
                 all_bubble_groups.append(bubble_groups)
 
-                # 4. Assemble Translation Request (filtering punctuation-only boxes)
+                # 4. Assemble Translation Request (isolating silence bubbles & filtering punctuation)
                 trans_items: list[TranslationRequestItem] = []
+                silence_items: list[TranslationItem] = []
                 for group_id, group_tbs in bubble_groups.items():
-                    # Filter punctuation-only text (skip standalone '?', '!', etc.)
-                    if all(is_punctuation_only(tb.ocr_text) for tb in group_tbs):
-                        logger.info("  Skipping punctuation-only box/group %d: '%s'", group_id, group_tbs[0].ocr_text)
+                    concatenated_text = "".join(tb.ocr_text.strip() for tb in group_tbs)
+
+                    # Silence / pause bubble (e.g. '……', '...', '---'): Pre-populate locally without querying LLM
+                    if is_silence_bubble(concatenated_text) or any(is_silence_bubble(tb.ocr_text) for tb in group_tbs):
+                        logger.info("  Detected silence bubble %d: '%s' -> assigned '...'", group_id, concatenated_text)
+                        silence_items.append(TranslationItem(id=group_id, english="..."))
                         continue
 
-                    # Concatenate Japanese OCR text with NO separator for multi-column text
-                    concatenated_text = "".join(tb.ocr_text.strip() for tb in group_tbs)
+                    # Filter standalone punctuation (e.g. '?', '!'): Do not overwrite or translate
+                    if is_punctuation_only(concatenated_text) or all(is_punctuation_only(tb.ocr_text) for tb in group_tbs):
+                        logger.info("  Skipping punctuation-only box/group %d: '%s'", group_id, concatenated_text)
+                        continue
+
                     speaker_val = group_tbs[0].speaker_name or (
                         f"Cluster_{group_tbs[0].speaker_cluster_id}"
                         if group_tbs[0].speaker_cluster_id is not None
@@ -394,8 +401,15 @@ class MangaTranslationPipeline:
                     vision_mode=page_vision_mode,
                 )
 
-                # 6. Dispatch Translation API call
-                trans_response = self.translator.translate(req)
+                # 6. Dispatch Translation API call (if there are items to translate)
+                if trans_items:
+                    trans_response = self.translator.translate(req)
+                else:
+                    trans_response = TranslationResponse(translations=[])
+
+                # Attach pre-calculated silence items (guarantees no dialogue hallucination)
+                if silence_items:
+                    trans_response.translations.extend(silence_items)
 
                 # 7. Safety Net: Ensure all requested IDs have a translation entry
                 expected_ids = {item.id for item in trans_items}

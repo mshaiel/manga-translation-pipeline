@@ -23,19 +23,53 @@ DIALOGUE_GRAMMAR_REGEX = re.compile(
     r"(?:[はがをにでのともかねよぞわぜ]|[だで]す|[だっ]た|ない|たい|てる|でる|から|けど|って|お前|おれ|私|僕|何|誰|どこ|いつ|どう|そう|これ|それ|あれ|ありがとう|助かった|待て|行く|来る|やる|見る|言う)"
 )
 
-# Matches text that consists strictly of punctuation and whitespace (no semantic dialogue)
-PUNCTUATION_ONLY_REGEX = re.compile(r"^[\s？！?!…。、．・〜～ー「」『』（）\(\)\.\,\!\?\:\;\-]+$")
+# Matches text that consists strictly of punctuation, ellipses, dots, dashes, and whitespace (silence/non-dialogue)
+SILENCE_OR_PUNCTUATION_REGEX = re.compile(
+    r"^[\s？！?!…。、．・〜～ー―─–—「」『』（）\(\)\[\]\{\}\.\,\!\?\:\;\-・･•‥⋮⋯︙´`'\"]+$"
+)
+
+# Short noise patterns often produced by OCR on dots/silence (e.g. '…っ', '…ッ', '…・', 'っ')
+SILENCE_NOISE_REGEX = re.compile(
+    r"^[\s…‥⋮⋯︙\.\-―─–—]*[っッ][\s…‥⋮⋯︙\.\-―─–—]*$"
+)
+
+
+def is_silence_or_punctuation(ocr_text: str) -> bool:
+    """Return True if the text represents silence (ellipses, dots, dashes) or punctuation-only.
+
+    Used to detect silent speech bubbles ('……', '...', '---', etc.) or standalone symbols ('?', '!')
+    so they are not translated with hallucinated dialogue or stolen text from adjacent panels.
+    """
+    if not ocr_text or not ocr_text.strip():
+        return True
+    stripped = ocr_text.strip()
+    if SILENCE_OR_PUNCTUATION_REGEX.match(stripped):
+        return True
+    if len(stripped) <= 3 and SILENCE_NOISE_REGEX.match(stripped):
+        return True
+    return False
 
 
 def is_punctuation_only(ocr_text: str) -> bool:
     """Return True if the text consists ONLY of Japanese/English punctuation and whitespace.
 
-    Used to filter standalone '?', '!', etc. from being sent to translation LLMs
-    or stamped over original manga art.
+    Maintained for backwards compatibility; delegates to is_silence_or_punctuation.
+    """
+    return is_silence_or_punctuation(ocr_text)
+
+
+def is_silence_bubble(ocr_text: str) -> bool:
+    """Return True if the text represents a silence or pause bubble (ellipses, dots, dashes).
+
+    Distinguishes silence bubbles ('……', '...', '---') which should be rendered as '...'
+    from standalone punctuation marks ('?', '!') which should remain unrendered.
     """
     if not ocr_text or not ocr_text.strip():
-        return True
-    return bool(PUNCTUATION_ONLY_REGEX.match(ocr_text.strip()))
+        return False
+    stripped = ocr_text.strip()
+    if not is_silence_or_punctuation(stripped):
+        return False
+    return bool(re.search(r"[…\.\-―─–—ー・･•‥⋮⋯︙]", stripped))
 
 
 def is_predominantly_katakana(text: str, threshold: float = 0.60) -> bool:
